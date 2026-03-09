@@ -31,6 +31,10 @@ func RandComplex128(min, max float64) complex128 {
 	return complex(RandFloat64(min, max), RandFloat64(min, max))
 }
 
+func RandFloat128(min, max float64) complex128 {
+	return complex(RandFloat64(min, max), 0)
+}
+
 // RandInt generates a random Int in [0, max-1].
 func RandInt(max *big.Int) (n *big.Int) {
 	var err error
@@ -38,4 +42,23 @@ func RandInt(max *big.Int) (n *big.Int) {
 		panic(err)
 	}
 	return
+}
+
+func RandModFloat(mod uint64) complex128 {
+    return complex(float64(RandMod(mod)) / float64(mod), 0)
+}
+
+func RandMod(mod uint64) uint64 {
+    if mod == 0 {
+        panic("mod must be greater than 0")
+    }
+
+    maxAcceptable := ^uint64(0) - (^uint64(0) % mod)
+
+    for {
+        r := RandUint64()
+        if r <= maxAcceptable {
+	    return r % mod
+        }
+    }
 }

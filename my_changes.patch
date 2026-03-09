@@ -1,0 +1,514 @@
+diff --git a/README.md b/README.md
+index 3c4447ea..83618f62 100644
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,9 @@
++# Instructions
++
++The code is based upon the code base from https://github.com/jaehyungkim0/CRT-FHE which is built upon Lattigo.
++To execute our implementation, go to examples/singleparty/ckks_bootstrapping/slim directory and run different experiments.
++For instance, you can execute the multiplication experiment by running 'go run mult.go'.
++
+ # Lattigo: lattice-based multiparty homomorphic encryption library in Go
+ 
+ <p align="center">
+diff --git a/circuits/ckks/bootstrapping/evaluator.go b/circuits/ckks/bootstrapping/evaluator.go
+index 2f78cc8a..3f9eb24a 100644
+--- a/circuits/ckks/bootstrapping/evaluator.go
++++ b/circuits/ckks/bootstrapping/evaluator.go
+@@ -210,11 +210,13 @@ func (eval *Evaluator) initialize(btpParams Parameters) (err error) {
+ 	// CoeffsToSlots vectors
+ 	// Change of variable for the evaluation of the Chebyshev polynomial + cancelling factor for the DFT and SubSum + eventual scaling factor for the double angle formula
+ 
+-	scale := eval.BootstrappingParameters.DefaultScale().Float64()
+-	offset := eval.Mod1Parameters.ScalingFactor().Float64() / eval.Mod1Parameters.MessageRatio()
++	//scale := eval.BootstrappingParameters.DefaultScale().Float64()
++	//offset := eval.Mod1Parameters.ScalingFactor().Float64() / eval.Mod1Parameters.MessageRatio()
++
++	//r := params.RingQ()
+ 
+ 	C2SScaling := new(big.Float).SetFloat64(qDiv / (K * qDiff))
+-	StCScaling := new(big.Float).SetFloat64(scale / offset)
++	StCScaling := new(big.Float).SetFloat64(1.0)
+ 
+ 	if btpParams.CoeffsToSlotsParameters.Scaling == nil {
+ 		eval.CoeffsToSlotsParameters.Scaling = C2SScaling
+@@ -797,7 +799,16 @@ func (eval Evaluator) CoeffsToSlots(ctIn *rlwe.Ciphertext) (ctReal, ctImag *rlwe
+ 
+ // EvalMod applies the homomorphic modular reduction by q.
+ func (eval Evaluator) EvalMod(ctIn *rlwe.Ciphertext) (ctOut *rlwe.Ciphertext, err error) {
+-	if ctOut, err = eval.Mod1Evaluator.EvaluateNew(ctIn); err != nil {
++	if ctOut, err = eval.Mod1Evaluator.EvaluateNew(ctIn, false); err != nil {
++		return nil, err
++	}
++
++	ctOut.Scale = eval.BootstrappingParameters.DefaultScale()
++	return
++}
++
++func (eval Evaluator) EvalElse(ctIn *rlwe.Ciphertext) (ctOut *rlwe.Ciphertext, err error) {
++	if ctOut, err = eval.Mod1Evaluator.EvaluateNew(ctIn, true); err != nil {
+ 		return nil, err
+ 	}
+ 
+@@ -808,7 +819,18 @@ func (eval Evaluator) EvalMod(ctIn *rlwe.Ciphertext) (ctOut *rlwe.Ciphertext, er
+ // EvalModAndScale applies the homomorphic modular reduction by q and scales the output value (without
+ // consuming an additional level).
+ func (eval Evaluator) EvalModAndScale(ctIn *rlwe.Ciphertext, scaling complex128) (ctOut *rlwe.Ciphertext, err error) {
+-	if ctOut, err = eval.Mod1Evaluator.EvaluateAndScaleNew(ctIn, scaling); err != nil {
++	if ctOut, err = eval.Mod1Evaluator.EvaluateAndScaleNew(ctIn, scaling, false); err != nil {
++		return nil, err
++	}
++
++	ctOut.Scale = eval.BootstrappingParameters.DefaultScale()
++	return
++}
++
++// EvalModAndScale applies the homomorphic modular reduction by q and scales the output value (without
++// consuming an additional level).
++func (eval Evaluator) EvalElseAndScale(ctIn *rlwe.Ciphertext, scaling complex128) (ctOut *rlwe.Ciphertext, err error) {
++	if ctOut, err = eval.Mod1Evaluator.EvaluateAndScaleNew(ctIn, scaling, true); err != nil {
+ 		return nil, err
+ 	}
+ 
+diff --git a/circuits/ckks/bootstrapping/parameters.go b/circuits/ckks/bootstrapping/parameters.go
+index 26fcd7bf..b9c3bdc7 100644
+--- a/circuits/ckks/bootstrapping/parameters.go
++++ b/circuits/ckks/bootstrapping/parameters.go
+@@ -457,15 +457,15 @@ func (p *Parameters) UnmarshalJSON(data []byte) (err error) {
+ // GaloisElements returns the list of Galois elements required to evaluate the bootstrapping.
+ func (p Parameters) GaloisElements(params ckks.Parameters) (galEls []uint64) {
+ 
+-	logN := params.LogN()
++	//logN := params.LogN()
+ 
+ 	// List of the rotation key values to needed for the bootstrap
+ 	keys := make(map[uint64]bool)
+ 
+ 	//SubSum rotation needed X -> Y^slots rotations
+-	for i := p.LogMaxDimensions().Cols; i < logN-1; i++ {
+-		keys[params.GaloisElement(1<<i)] = true
+-	}
++	//for i := p.LogMaxDimensions().Cols; i < logN-1; i++ {
++	//	keys[params.GaloisElement(1<<i)] = true
++	//}
+ 
+ 	for _, galEl := range p.CoeffsToSlotsParameters.GaloisElements(params) {
+ 		keys[galEl] = true
+diff --git a/circuits/ckks/mod1/mod1_evaluator.go b/circuits/ckks/mod1/mod1_evaluator.go
+index 6d5de560..54717867 100644
+--- a/circuits/ckks/mod1/mod1_evaluator.go
++++ b/circuits/ckks/mod1/mod1_evaluator.go
+@@ -28,7 +28,7 @@ func NewEvaluator(eval *ckks.Evaluator, evalPoly *polynomial.Evaluator, Mod1Para
+ 
+ // EvaluateAndScaleNew calls [EvaluateNew] and scales the output values by `scaling` (without consuming additional depth).
+ // If `scaling` set to 1, then this is equivalent to simply calling [EvaluateNew].
+-func (eval Evaluator) EvaluateAndScaleNew(ct *rlwe.Ciphertext, scaling complex128) (res *rlwe.Ciphertext, err error) {
++func (eval Evaluator) EvaluateAndScaleNew(ct *rlwe.Ciphertext, scaling complex128, check bool) (res *rlwe.Ciphertext, err error) {
+ 
+ 	evm := eval.Parameters
+ 
+@@ -62,8 +62,10 @@ func (eval Evaluator) EvaluateAndScaleNew(ct *rlwe.Ciphertext, scaling complex12
+ 		offset := new(big.Float).Sub(&evm.Mod1Poly.B, &evm.Mod1Poly.A)
+ 		offset.Mul(offset, new(big.Float).SetFloat64(evm.IntervalShrinkFactor()))
+ 		offset.Quo(new(big.Float).SetFloat64(-0.5), offset)
+-		if err = eval.Add(res, offset, res); err != nil {
+-			return nil, fmt.Errorf("cannot Evaluate: %w", err)
++		if check == false {
++			if err = eval.Add(res, offset, res); err != nil {
++				return nil, fmt.Errorf("cannot Evaluate: %w", err)
++			}
+ 		}
+ 	}
+ 
+@@ -157,6 +159,6 @@ func (eval Evaluator) EvaluateAndScaleNew(ct *rlwe.Ciphertext, scaling complex12
+ // !! Assumes that the input is normalized by 1/K for K the range of the approximation.
+ //
+ // Scaling back error correction by 2^{round(log(Q))}/Q afterward is included in the polynomial
+-func (eval Evaluator) EvaluateNew(ct *rlwe.Ciphertext) (*rlwe.Ciphertext, error) {
+-	return eval.EvaluateAndScaleNew(ct, 1)
++func (eval Evaluator) EvaluateNew(ct *rlwe.Ciphertext, check bool) (*rlwe.Ciphertext, error) {
++	return eval.EvaluateAndScaleNew(ct, 1, check)
+ }
+diff --git a/examples/singleparty/ckks_bootstrapping/slim/main.go b/examples/singleparty/ckks_bootstrapping/slim/main.go
+deleted file mode 100644
+index 07c06848..00000000
+--- a/examples/singleparty/ckks_bootstrapping/slim/main.go
++++ /dev/null
+@@ -1,338 +0,0 @@
+-// Package main implements an example showcasing slim for bootstrapping for fixed-point approximate
+-// arithmetic over the reals/complexes numbers.
+-// This re-ordering of the bootstrapping steps was first proposed for the BFV/BGV schemes by Chen and Han
+-// in Homomorphic Lower Digits Removal and Improved FHE Bootstrapping (https://eprint.iacr.org/2018/067).
+-// It was also used by Kim and Guyot in Optimized Privacy-Preserving CNN Inference With Fully Homomorphic
+-// Encryption (https://ieeexplore.ieee.org/document/10089847) to efficiently perform the convolution in
+-// the coefficient domain.
+-//
+-// This example assumes that the user is already familiar with the bootstrapping and its different steps.
+-// See the basic example `lattigo/single_party/applications/reals_bootstrapping/basics` for an introduction into the
+-// bootstrapping.
+-//
+-// The usual order of the bootstrapping operations is:
+-//
+-// 0) User defined circuit in the slots domain
+-// 1) ScaleDown: Scale the ciphertext to q0/|m|
+-// 2) ModUp: Raise modulus from q0 to qL
+-// 3) CoeffsToSlots: Homomorphic encoding
+-// 4) EvalMod: Homomorphic modular reduction
+-// 5) SlotsToCoeffs (and go back to 0): Homomorphic Decoding
+-//
+-// This example instantiates a custom order of the circuit evaluating:
+-//
+-// 0) User defined circuit in the slots domain
+-// 1) SlotsToCoeffs: Homomorphic Decoding
+-// 2) User defined circuit in the coeffs domain
+-// 3) ScaleDown: Scale the ciphertext to q0/|m|
+-// 4) ModUp: Raise modulus from q0 to qL
+-// 5) CoeffsToSlots: Homomorphic encoding
+-// 6) EvalMod (and to back to 0): Homomorphic modular reduction
+-//
+-// Use the flag -short to run the examples fast but with insecure parameters.
+-package main
+-
+-import (
+-	"flag"
+-	"fmt"
+-	"math"
+-
+-	"github.com/tuneinsight/lattigo/v6/circuits/ckks/bootstrapping"
+-	"github.com/tuneinsight/lattigo/v6/circuits/ckks/dft"
+-	"github.com/tuneinsight/lattigo/v6/circuits/ckks/mod1"
+-	"github.com/tuneinsight/lattigo/v6/core/rlwe"
+-	"github.com/tuneinsight/lattigo/v6/ring"
+-	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
+-	"github.com/tuneinsight/lattigo/v6/utils"
+-	"github.com/tuneinsight/lattigo/v6/utils/sampling"
+-)
+-
+-var flagShort = flag.Bool("short", false, "run the example with a smaller and insecure ring degree.")
+-
+-func main() {
+-
+-	flag.Parse()
+-
+-	// Default LogN, which with the following defined parameters
+-	// provides a security of 128-bit.
+-	LogN := 16
+-
+-	if *flagShort {
+-		LogN -= 3
+-	}
+-
+-	//============================
+-	//=== 1) SCHEME PARAMETERS ===
+-	//============================
+-
+-	// In this example, for a pratical purpose, the residual parameters and bootstrapping
+-	// parameters are the same. But in practice the residual parameters would not contain the
+-	// moduli for the CoeffsToSlots and EvalMod steps.
+-	// With LogN=16, LogQP=1221 and H=192, these parameters achieve well over 128-bit of security.
+-	// For the purpose of the example, only one prime is allocated to the circuit in the slots domain
+-	// and no prime is allocated to the circuit in the coeffs domain.
+-
+-	LogDefaultScale := 45
+-
+-	q0 := []int{55}                                    // 3) ScaleDown & 4) ModUp
+-	qiSlotsToCoeffs := []int{39, 39, 39}               // 1) SlotsToCoeffs
+-	qiCircuitSlots := []int{LogDefaultScale}           // 0) Circuit in the slot domain
+-	qiEvalMod := []int{60, 60, 60, 60, 60, 60, 60, 60} // 6) EvalMod
+-	qiCoeffsToSlots := []int{56, 56, 56, 56}           // 5) CoeffsToSlots
+-
+-	LogQ := append(q0, qiSlotsToCoeffs...)
+-	LogQ = append(LogQ, qiCircuitSlots...)
+-	LogQ = append(LogQ, qiEvalMod...)
+-	LogQ = append(LogQ, qiCoeffsToSlots...)
+-
+-	params, err := ckks.NewParametersFromLiteral(ckks.ParametersLiteral{
+-		LogN:            LogN,                      // Log2 of the ring degree
+-		LogQ:            LogQ,                      // Log2 of the ciphertext modulus
+-		LogP:            []int{61, 61, 61, 61, 61}, // Log2 of the key-switch auxiliary prime moduli
+-		LogDefaultScale: LogDefaultScale,           // Log2 of the scale
+-		Xs:              ring.Ternary{H: 192},
+-	})
+-
+-	if err != nil {
+-		panic(err)
+-	}
+-
+-	//====================================
+-	//=== 2) BOOTSTRAPPING PARAMETERS ===
+-	//====================================
+-
+-	// CoeffsToSlots parameters (homomorphic encoding)
+-	CoeffsToSlotsParameters := dft.MatrixLiteral{
+-		Type:         dft.HomomorphicEncode,
+-		Format:       dft.RepackImagAsReal, // Returns the real and imaginary part into separate ciphertexts
+-		LogSlots:     params.LogMaxSlots(),
+-		LevelQ:       params.MaxLevelQ(),
+-		LevelP:       params.MaxLevelP(),
+-		LogBSGSRatio: 1,
+-		Levels:       []int{1, 1, 1, 1}, //qiCoeffsToSlots
+-	}
+-
+-	// Parameters of the homomorphic modular reduction x mod 1
+-	Mod1ParametersLiteral := mod1.ParametersLiteral{
+-		LevelQ:          params.MaxLevel() - CoeffsToSlotsParameters.Depth(true),
+-		LogScale:        60,               // Matches qiEvalMod
+-		Mod1Type:        mod1.CosDiscrete, // Multi-interval Chebyshev interpolation
+-		Mod1Degree:      30,               // Depth 5
+-		DoubleAngle:     3,                // Depth 3
+-		K:               16,               // With EphemeralSecretWeight = 32 and 2^{15} slots, ensures < 2^{-138.7} failure probability
+-		LogMessageRatio: 10,               // q/|m| = 2^10
+-		Mod1InvDegree:   0,                // Depth 0
+-	}
+-
+-	// SlotsToCoeffs parameters (homomorphic decoding)
+-	SlotsToCoeffsParameters := dft.MatrixLiteral{
+-		Type:         dft.HomomorphicDecode,
+-		LogSlots:     params.LogMaxSlots(),
+-		LogBSGSRatio: 1,
+-		LevelP:       params.MaxLevelP(),
+-		Levels:       []int{1, 1, 1}, // qiSlotsToCoeffs
+-	}
+-
+-	SlotsToCoeffsParameters.LevelQ = len(SlotsToCoeffsParameters.Levels)
+-
+-	// Custom bootstrapping.Parameters.
+-	// All fields are public and can be manually instantiated.
+-	btpParams := bootstrapping.Parameters{
+-		ResidualParameters:      params,
+-		BootstrappingParameters: params,
+-		SlotsToCoeffsParameters: SlotsToCoeffsParameters,
+-		Mod1ParametersLiteral:   Mod1ParametersLiteral,
+-		CoeffsToSlotsParameters: CoeffsToSlotsParameters,
+-		EphemeralSecretWeight:   32, // > 128bit secure for LogN=16 and LogQP = 115.
+-		CircuitOrder:            bootstrapping.DecodeThenModUp,
+-	}
+-
+-	// We pring some information about the bootstrapping parameters (which are identical to the residual parameters in this example).
+-	// We can notably check that the LogQP of the bootstrapping parameters is smaller than 1550, which ensures
+-	// 128-bit of security as explained above.
+-	fmt.Printf("Bootstrapping parameters: logN=%d, logSlots=%d, H(%d; %d), sigma=%f, logQP=%f, levels=%d, scale=2^%d\n",
+-		btpParams.BootstrappingParameters.LogN(),
+-		btpParams.BootstrappingParameters.LogMaxSlots(),
+-		btpParams.BootstrappingParameters.XsHammingWeight(),
+-		btpParams.EphemeralSecretWeight,
+-		btpParams.BootstrappingParameters.Xe(),
+-		btpParams.BootstrappingParameters.LogQP(),
+-		btpParams.BootstrappingParameters.QCount(),
+-		btpParams.BootstrappingParameters.LogDefaultScale())
+-
+-	//===========================
+-	//=== 3) KEYGEN & ENCRYPT ===
+-	//===========================
+-
+-	// Now that both the residual and bootstrapping parameters are instantiated, we can
+-	// instantiate the usual necessary object to encode, encrypt and decrypt.
+-
+-	// Scheme context and keys
+-	kgen := rlwe.NewKeyGenerator(params)
+-
+-	sk, pk := kgen.GenKeyPairNew()
+-
+-	encoder := ckks.NewEncoder(params)
+-	decryptor := rlwe.NewDecryptor(params, sk)
+-	encryptor := rlwe.NewEncryptor(params, pk)
+-
+-	fmt.Println()
+-	fmt.Println("Generating bootstrapping evaluation keys...")
+-	evk, _, err := btpParams.GenEvaluationKeys(sk)
+-	if err != nil {
+-		panic(err)
+-	}
+-	fmt.Println("Done")
+-
+-	//========================
+-	//=== 4) BOOTSTRAPPING ===
+-	//========================
+-
+-	// Instantiates the bootstrapper
+-	var eval *bootstrapping.Evaluator
+-	if eval, err = bootstrapping.NewEvaluator(btpParams, evk); err != nil {
+-		panic(err)
+-	}
+-
+-	// Generate a random plaintext with values uniformly distributed in [-1, 1] for the real and imaginary part.
+-	valuesWant := make([]complex128, params.MaxSlots())
+-	for i := range valuesWant {
+-		valuesWant[i] = sampling.RandComplex128(-1, 1)
+-	}
+-
+-	// We encrypt at level 0
+-	plaintext := ckks.NewPlaintext(params, SlotsToCoeffsParameters.LevelQ)
+-	if err := encoder.Encode(valuesWant, plaintext); err != nil {
+-		panic(err)
+-	}
+-
+-	// Encrypt
+-	ciphertext, err := encryptor.EncryptNew(plaintext)
+-	if err != nil {
+-		panic(err)
+-	}
+-
+-	// Decrypt, print and compare with the plaintext values
+-	fmt.Println()
+-	fmt.Println("Precision of values vs. ciphertext")
+-	valuesTest := printDebug(params, ciphertext, valuesWant, decryptor, encoder)
+-
+-	fmt.Println("Bootstrapping...")
+-
+-	// Step 0: Some circuit in the slots domain
+-
+-	// Step 1 : SlotsToCoeffs (Homomorphic decoding)
+-	if ciphertext, err = eval.SlotsToCoeffs(ciphertext, nil); err != nil {
+-		panic(err)
+-	}
+-
+-	// Step 2: Some circuit in the coefficient domain
+-	// Note: the result of SlotsToCoeffs is naturally given in bit-reversed order
+-	// In this example, we multiply by the monomial X^{N/2} (which is the imaginary
+-	// unit in the slots domain)
+-	if err = eval.Evaluator.Mul(ciphertext, 1i, ciphertext); err != nil {
+-		panic(err)
+-	}
+-
+-	// Then we need to apply the same mapping to the reference values:
+-
+-	// Maps C^{N/2} to R[X]/(X^N+1) (bit-reversed)
+-	utils.BitReverseInPlaceSlice(valuesTest, len(valuesTest))
+-	valuesTestFloat := make([]float64, ciphertext.Slots()*2)
+-	for i, j := 0, params.N()/2; i < params.N()/2; i, j = i+1, j+1 {
+-		valuesTestFloat[i] = real(valuesTest[i])
+-		valuesTestFloat[j] = imag(valuesTest[i])
+-	}
+-
+-	// Multiplication by X^{N/2}
+-	utils.RotateSliceInPlace(valuesTestFloat, -params.N()/2)
+-	for i := 0; i < params.N()/2; i++ {
+-		valuesTestFloat[i] *= -1
+-	}
+-
+-	// Maps R[X]/(X^N+1) to C^{N/2} (bit-reversed)
+-	for i, j := 0, params.N()/2; i < params.N()/2; i, j = i+1, j+1 {
+-		valuesTest[i] = complex(valuesTestFloat[i], valuesTestFloat[j])
+-	}
+-	utils.BitReverseInPlaceSlice(valuesTest, len(valuesTest))
+-
+-	// Step 3: scale to q/|m|
+-	if ciphertext, _, err = eval.ScaleDown(ciphertext); err != nil {
+-		panic(err)
+-	}
+-
+-	// Step 4 : Extend the basis from q to Q
+-	if ciphertext, err = eval.ModUp(ciphertext); err != nil {
+-		panic(err)
+-	}
+-
+-	// Step 5 : CoeffsToSlots (Homomorphic encoding)
+-	// Note: expects the result to be given in bit-reversed order
+-	// Also, we need the homomorphic encoding to split the real and
+-	// imaginary parts into two pure real ciphertexts, because the
+-	// homomorphic modular reduction is only defined on the reals.
+-	// The `imag` ciphertext can be ignored if the original input
+-	// is purely real.
+-	var real, imag *rlwe.Ciphertext
+-	if real, imag, err = eval.CoeffsToSlots(ciphertext); err != nil {
+-		panic(err)
+-	}
+-
+-	// Step 6 : EvalMod (Homomorphic modular reduction)
+-	if real, err = eval.EvalMod(real); err != nil {
+-		panic(err)
+-	}
+-
+-	if imag, err = eval.EvalMod(imag); err != nil {
+-		panic(err)
+-	}
+-
+-	// Recombines the real and imaginary part
+-	if err = eval.Evaluator.Mul(imag, 1i, imag); err != nil {
+-		panic(err)
+-	}
+-
+-	if err = eval.Evaluator.Add(real, imag, ciphertext); err != nil {
+-		panic(err)
+-	}
+-
+-	fmt.Println("Done")
+-
+-	//==================
+-	//=== 5) DECRYPT ===
+-	//==================
+-
+-	// Decrypt, print and compare with the plaintext values
+-	fmt.Println()
+-	fmt.Println("Precision of ciphertext vs. Bootstrap(ciphertext)")
+-	printDebug(params, ciphertext, valuesTest, decryptor, encoder)
+-}
+-
+-func printDebug(params ckks.Parameters, ciphertext *rlwe.Ciphertext, valuesWant []complex128, decryptor *rlwe.Decryptor, encoder *ckks.Encoder) (valuesTest []complex128) {
+-
+-	slots := ciphertext.Slots()
+-
+-	if !ciphertext.IsBatched {
+-		slots *= 2
+-	}
+-
+-	valuesTest = make([]complex128, slots)
+-
+-	if err := encoder.Decode(decryptor.DecryptNew(ciphertext), valuesTest); err != nil {
+-		panic(err)
+-	}
+-
+-	fmt.Println()
+-	fmt.Printf("Level: %d (logQ = %d)\n", ciphertext.Level(), params.LogQLvl(ciphertext.Level()))
+-
+-	fmt.Printf("Scale: 2^%f\n", math.Log2(ciphertext.Scale.Float64()))
+-	fmt.Printf("ValuesTest: %10.14f %10.14f %10.14f %10.14f...\n", valuesTest[0], valuesTest[1], valuesTest[2], valuesTest[3])
+-	fmt.Printf("ValuesWant: %10.14f %10.14f %10.14f %10.14f...\n", valuesWant[0], valuesWant[1], valuesWant[2], valuesWant[3])
+-
+-	precStats := ckks.GetPrecisionStats(params, encoder, nil, valuesWant, valuesTest, 0, false)
+-
+-	fmt.Println(precStats.String())
+-	fmt.Println()
+-
+-	return
+-}
+diff --git a/utils/sampling/sampling.go b/utils/sampling/sampling.go
+index 64c92cf9..1731457e 100644
+--- a/utils/sampling/sampling.go
++++ b/utils/sampling/sampling.go
+@@ -31,6 +31,10 @@ func RandComplex128(min, max float64) complex128 {
+ 	return complex(RandFloat64(min, max), RandFloat64(min, max))
+ }
+ 
++func RandFloat128(min, max float64) complex128 {
++	return complex(RandFloat64(min, max), 0)
++}
++
+ // RandInt generates a random Int in [0, max-1].
+ func RandInt(max *big.Int) (n *big.Int) {
+ 	var err error
+@@ -39,3 +43,22 @@ func RandInt(max *big.Int) (n *big.Int) {
+ 	}
+ 	return
+ }
++
++func RandModFloat(mod uint64) complex128 {
++    return complex(float64(RandMod(mod)) / float64(mod), 0)
++}
++
++func RandMod(mod uint64) uint64 {
++    if mod == 0 {
++        panic("mod must be greater than 0")
++    }
++
++    maxAcceptable := ^uint64(0) - (^uint64(0) % mod)
++
++    for {
++        r := RandUint64()
++        if r <= maxAcceptable {
++	    return r % mod
++        }
++    }
++}

@@ -457,15 +457,15 @@ func (p *Parameters) UnmarshalJSON(data []byte) (err error) {
 // GaloisElements returns the list of Galois elements required to evaluate the bootstrapping.
 func (p Parameters) GaloisElements(params ckks.Parameters) (galEls []uint64) {
 
-	logN := params.LogN()
+	//logN := params.LogN()
 
 	// List of the rotation key values to needed for the bootstrap
 	keys := make(map[uint64]bool)
 
 	//SubSum rotation needed X -> Y^slots rotations
-	for i := p.LogMaxDimensions().Cols; i < logN-1; i++ {
-		keys[params.GaloisElement(1<<i)] = true
-	}
+	//for i := p.LogMaxDimensions().Cols; i < logN-1; i++ {
+	//	keys[params.GaloisElement(1<<i)] = true
+	//}
 
 	for _, galEl := range p.CoeffsToSlotsParameters.GaloisElements(params) {
 		keys[galEl] = true

@@ -28,7 +28,7 @@ func NewEvaluator(eval *ckks.Evaluator, evalPoly *polynomial.Evaluator, Mod1Para
 
 // EvaluateAndScaleNew calls [EvaluateNew] and scales the output values by `scaling` (without consuming additional depth).
 // If `scaling` set to 1, then this is equivalent to simply calling [EvaluateNew].
-func (eval Evaluator) EvaluateAndScaleNew(ct *rlwe.Ciphertext, scaling complex128) (res *rlwe.Ciphertext, err error) {
+func (eval Evaluator) EvaluateAndScaleNew(ct *rlwe.Ciphertext, scaling complex128, check bool) (res *rlwe.Ciphertext, err error) {
 
 	evm := eval.Parameters
 
@@ -62,8 +62,10 @@ func (eval Evaluator) EvaluateAndScaleNew(ct *rlwe.Ciphertext, scaling complex12
 		offset := new(big.Float).Sub(&evm.Mod1Poly.B, &evm.Mod1Poly.A)
 		offset.Mul(offset, new(big.Float).SetFloat64(evm.IntervalShrinkFactor()))
 		offset.Quo(new(big.Float).SetFloat64(-0.5), offset)
-		if err = eval.Add(res, offset, res); err != nil {
-			return nil, fmt.Errorf("cannot Evaluate: %w", err)
+		if check == false {
+			if err = eval.Add(res, offset, res); err != nil {
+				return nil, fmt.Errorf("cannot Evaluate: %w", err)
+			}
 		}
 	}
 
@@ -157,6 +159,6 @@ func (eval Evaluator) EvaluateAndScaleNew(ct *rlwe.Ciphertext, scaling complex12
 // !! Assumes that the input is normalized by 1/K for K the range of the approximation.
 //
 // Scaling back error correction by 2^{round(log(Q))}/Q afterward is included in the polynomial
-func (eval Evaluator) EvaluateNew(ct *rlwe.Ciphertext) (*rlwe.Ciphertext, error) {
-	return eval.EvaluateAndScaleNew(ct, 1)
+func (eval Evaluator) EvaluateNew(ct *rlwe.Ciphertext, check bool) (*rlwe.Ciphertext, error) {
+	return eval.EvaluateAndScaleNew(ct, 1, check)
 }

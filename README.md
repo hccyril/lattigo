@@ -1,3 +1,9 @@
+# Instructions
+
+The code is based upon the code base from https://github.com/jaehyungkim0/CRT-FHE which is built upon Lattigo.
+To execute our implementation, go to examples/singleparty/ckks_bootstrapping/slim directory and run different experiments.
+For instance, you can execute the multiplication experiment by running 'go run mult.go'.
+
 # Lattigo: lattice-based multiparty homomorphic encryption library in Go
 
 <p align="center">
