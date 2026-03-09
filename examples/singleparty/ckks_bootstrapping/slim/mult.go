@@ -412,11 +412,14 @@ func main() {
 		panic(err)
 	}
 
+	// [代码对应论文]: Section 3.1 & 3.2
 	// Define Computer Parameters
+	// 按照论文：将 k bit (64-bit) 无符号整数拆分为以 l bit (4-bit) 为步长(块大小)的格式，总共分解为 64/4 = 16 块。
 	l := 4
 	k := 64
 
 	// Define Modulo Parameters
+	// n 为 16；mods 计算出 d = 2^l = 16，用于后续的模 d 规约和进位。
 	n := 16
 	mods := uint64(1 << l)
 	deg_eval := 2*n-1
@@ -463,6 +466,8 @@ func main() {
 	// num1
 	num1 := large1[j]
 	// Decompose into base-16 digits
+	// [算法实现]: Encryption Scheme (Section 3.1)
+	// 将标量 64-bit 整数分解为 k/l = 16 个小块，提取每一位的权重。
 	digits1 := make([]uint64, k/l)
 	for t := 0; t < k/l; t++ {
 		digits1[t] = num1 & 0xF
@@ -520,6 +525,9 @@ func main() {
 	}
 	start := time.Now()
 	
+	// [代码对应论文]: Section 3.2 Multiplication
+	// 计算卷积公式: [a*b] = sum_{i=0}^{u-1} (sum_{j=0}^{i} a_j * b_{i-j}) * d^i
+	// 这一步同态计算每一位的混合交叉乘积之和，不处理进位。
 	for i := 0; i < k/l; i++ {
 	for j := 0; j <= i; j++ {
 	ctmp, err := eval.MulRelinNew(cvec1[j], cvec2[i-j])
@@ -635,6 +643,9 @@ func main() {
 
 	start = time.Now()
 
+	// [代码对应论文]: Section 3.2 Reduce 操作。
+	// 乘法产生的值可能远远大于单次进位 (d-1)，此时的位结果能达到 d^3 量级！
+	// 所以进位逻辑更复杂，需要提取多级 Carry 并通过 Bootstrap 清洗。
 	Reduction := func() {
 	fmt.Println("----------------------------------")
 	for i := range cvec {

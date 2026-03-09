@@ -412,7 +412,9 @@ func main() {
 		panic(err)
 	}
 
+	// [代码对应论文]: Section 3.1 & 3.2
 	// Define Computer Parameters
+	// 按照论文：将 64-bit 整数拆分为以 4-bit 为块大小的格式，总共分解为 16 块。
 	l := 4
 	k := 64
 
@@ -509,6 +511,9 @@ func main() {
 	}
 	start := time.Now()
 	
+	// [代码对应论文]: Section 3.2 Comparison
+	// 首先执行向量化减法 a - b，由于比较逻辑其实是取 a - b 的特殊携带位 (Carry)。
+	// 此处是按位对其减法，如果 zi < 0 (代表 a 的当前位或全局值 < b)，其在最高位通过进位传导出的 Carry 为 -1。
 	for i := 0; i < k/l; i++ {
 	cvec[i], err = eval.SubNew(cvec1[i], cvec2[i])
 	}
@@ -636,12 +641,16 @@ func main() {
 	if err := eval.Rescale(ciphertext2, ciphertext2); err != nil {
 		panic(err)
 	}
-	// ciphertext = ciphertext2.CopyNew()
+	// 提取 Carry 的计算，并进行清洗
 	ciphertext, err = eval.AddNew(ciphertext2, 0.5)
 	Bootstrap()
 	// ciphertext2 = ciphertext.CopyNew()
 	ciphertext2, err = eval.SubNew(ciphertext, float64(8.0))
 	if i == len(cvec) - 1 {
+	// [核心公式实现]: 根据论文 Comparison 定义，结果为 Carry(ct - ct') + 1。
+	// 通过上面最后一步提取的顶层 Carry 加上 1，可以得出:
+	// 若 a >= b，最高位输出 0 + 1 = 1 (true)
+	// 若 a < b，最高位输出 -1 + 1 = 0 (false)
 	cres, err = eval.AddNew(ciphertext2, float64(1.0))
 	}
 	}

@@ -412,11 +412,14 @@ func main() {
 		panic(err)
 	}
 
+	// [代码对应论文]: Section 3.1 & 3.2
 	// Define Computer Parameters
+	// 按照论文：将 k bit (64-bit) 无符号整数拆分为以 l bit (4-bit) 为步长(块大小)的格式，总共分解为 64/4 = 16 块。
 	l := 4
 	k := 64
 
 	// Define Modulo Parameters
+	// n 为 16；mods 计算出 d = 2^l = 16，用于后续的模 d 规约和进位。
 	n := 16
 	mods := uint64(1 << l)
 	deg_eval := 2*n-1
@@ -463,6 +466,9 @@ func main() {
 	// num1
 	num1 := large1[j]
 	// Decompose into base-16 digits
+	// [算法实现]: Encryption Scheme (Section 3.1)
+	// 将标量 64-bit 无符号整数 num1 分解为 k/l = 16 个小块，每块 4-bit。
+	// 这里通过位移 >> 4 和掩码 0xF 提取出来。这也就是论文里将 z_j 表示为基数 d=16 的格式的代码实现。
 	digits1 := make([]uint64, k/l)
 	for t := 0; t < k/l; t++ {
 		digits1[t] = num1 & 0xF
@@ -520,6 +526,9 @@ func main() {
 	}
 	start := time.Now()
 	
+	// [代码对应论文]: Section 3.2 Addition
+	// 针对每一个 4-bit 块 (0 到 15 共 16 个块)，直接进行 CKKS 底层对应位置的密文加法: Add(cvec1[i], cvec2[i])。
+	// 此时未做进位处理，某些块的和可能达到 [0, 2d-1) = [0, 31]。
 	for i := 0; i < k/l; i++ {
 	cvec[i], err = eval.AddNew(cvec1[i], cvec2[i])
 	}
@@ -542,6 +551,9 @@ func main() {
 	}
 
 	boot_count := 0
+	// [代码对应论文]: Algorithms 1, 2, 3 (Bootstrapping / CKKS Modular Reduction)
+	// 这个 Bootstrap 函数实质上是执行了自举和用于求 IntMod_d 的多项式插值与清洗操作（使用 Hermite 插值多项式）。
+	// 在此处它组合了 SlotsToCoeffs -> ScaleDown -> ModUp -> CoeffsToSlots -> EvalMod (提取模数部分) 等完整逻辑。
 	Bootstrap := func() {
 	boot_count += 1
 	// Step 1 : SlotsToCoeffs (Homomorphic decoding)
@@ -619,25 +631,37 @@ func main() {
 	
 	start = time.Now()
 
+	start = time.Now()
+
+	// [代码对应论文]: Section 3.2 中的 Reduce 操作及其携带的 Carry_d 与 IntMod_d 计算
+	// 目标是将每一位可能超过最大值 d-1 的数据计算出进位，并加到更高一位去。
+	// 公式：c_i' = c_i + q_{i-1} -> r_i = IntMod_d(c_i'), q_i = Carry_d(c_i')
 	Reduction := func() {
 	fmt.Println("----------------------------------")
 	for i := range cvec {
 	ciphertext = cvec[i].CopyNew()
 	if i != 0 {
+	// 加上上一位传过来的 Carry (ciphertext2)
 	if err = eval.Evaluator.Add(ciphertext, ciphertext2, ciphertext); err != nil {
 		panic(err)
 	}
 	}
 	ciphertext2 = ciphertext.CopyNew()
+	
+	// 执行缩放，除以 mods（相当于除以 d=16），为求 Carry_d (进位) 做准备。
 	if err := eval.Mul(ciphertext, scale_diff / float64(mods), ciphertext); err != nil {
 		panic(err)
 	}
 	if err := eval.Rescale(ciphertext, ciphertext); err != nil {
 		panic(err)
 	}
+	
+	// 通过调用 Bootstrap 完成多项式插值和非线性层，提取真正的进位 q_i = floor(c_i / d)
 	Bootstrap()
 	cvec[i] = ciphertext.CopyNew()
+	
 	if i != len(cvec) - 1 {
+	// 计算原本的数减去 进位 * d，得到当前位的余数 r_i = c_i - q_i * d
 	if err = eval.Evaluator.Sub(ciphertext2, ciphertext, ciphertext2); err != nil {
 		panic(err)
 	}

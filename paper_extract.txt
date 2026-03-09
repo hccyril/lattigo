@@ -1,0 +1,1385 @@
+Efficient Homomorphic Integer Computer
+from CKKS
+Jaehyung Kim
+Stanford University, Stanford, USA
+jaehk@stanford.edu
+Abstract. As Fully Homomorphic Encryption (FHE) enables computation over
+encrypted data, it is a natural question of how efficiently it handles standard integer
+computations like 64-bit arithmetic. It has long been believed that the CGGI/DM
+family or the BGV/BFV family are the best options, depending on the size of the
+parallelism. The discrete variant of CKKS, suggested by Druckeret al. [J.Cryptol.’24],
+provides an interesting alternative for integer computations. Notably, the modular
+reduction framework proposed by Kim and Noh [CiC’25] built on top of the CKKS-
+style functional bootstrapping by Baeet al. [Asiacrypt’24] gives an efficient arithmetic
+modulo small integers.
+In this work, we propose a novel homomorphic computer for unsigned integer compu-
+tations. We represent a large integer (e.g.64-bit) as a vector of smaller chunks (e.g.
+4-bit) and construct arithmetic operations relying on discrete CKKS. The proposed
+scheme supports many of the operations supported in TFHE-rs while outperforming it
+in terms of amortized running time. Notably, our homomorphic 64-bit multiplication
+takes 8.85ms per slot, which is more than three orders of magnitude faster than
+TFHE-rs.
+Keywords: Fully Homomorphic Encryption· Integer Arithmetic · Discrete CKKS
+1 Introduction
+Fully Homomorphic Encryption (FHE) is a branch of cryptography that allows computation
+in an encrypted state. Since Gentry’s first instantiation [Gen09], the efficiency of FHE has
+been improved dramatically. The major FHE schemes can be categorized into LWE-based
+and RLWE-based depending on whether the default ciphertext format is LWE or RLWE,
+respectively. LWE-based schemes such as the CGGI/DM family [CGGI16, DM15] are
+known to be fast (in terms of latency) and flexible, while RLWE-based schemes such as the
+BGV/BFV family [Bra12, FV12, BGV12] and CKKS [CKKS17] have better throughput.
+One of the key technical differences is that computations on LWE-based schemes mostly
+rely on programmable/functional bootstrapping [CJP21, KS23] whereas computations on
+RLWE-based schemes mainly use homomorphic polynomial evaluations (i.e. addition and
+multiplication).
+It had long been believed that different families are good at different functionalities. For
+instance, the CGGI/DM family was used to handle small or non-parallelizable computations,
+the BGV/BFV family was used to handle parallelizable large integer computations, and
+CKKS was used to handle real number arithmetic. However, recent improvements in
+the discrete variant of CKKS [DMPS24, CKKL24, BCKS24, BKSS24, AKP25, KN25]
+suggest that this may not be true. In particular, recent works [BCKS24, BKSS24, AKP25]
+show that CKKS handles functional/programmable bootstrapping more efficiently than
+CGGI/DM by several orders of magnitude. As functional/programmable bootstrapping is
+
+2 Efficient Homomorphic Integer Computer from CKKS
+a core component of CGGI/DM, this means that it can be preferable to use CKKS if we
+have sufficient parallelism.
+Since we know that CKKS handles homomorphic look-up tables efficiently, a natural
+question is whether CKKS is good at integer computations in general. For computations
+modulo NTT-friendly primes, it seems that the BGV/BFV family is the right choice, as
+they provide a fast and efficient solution for both latency and throughput, in light of
+recent improvements in BGV/BFV bootstrapping [MHWW24, KSS24] and generalization
+of BFV [GV25, CHM+25]. However, when it comes to standard modulo power-of-two
+computations like unsigned 64-bit arithmetic, the landscape is relatively unclear. The
+most straightforward option, to use the plaintext modulus to be a power-of-two has several
+problems. One problem is that the plaintext modulus is too large to be efficiently supported.
+For instance, 64-bit multiplications in BGV/BFV enlarge the noise by more than64 bits,
+and choosing large parameters like large ring degree (e.g.log(N)≥17) is unavoidable.1
+Recall that large parameters lead to inefficiency in terms of latency and memory footprint,
+which is not desirable. Another problem is that the use of a power-of-two modulus prevents
+one from using large parallelism. In BGV/BFV, the number of slots is determined by
+how the cyclotomic polynomialΦM(X) splits in the plaintext spaceZt. Ast is a power-
+of-two, we do not have as many slots as in the case of NTT-friendly primes, leading to
+lower throughput for handling modulot computations in parallel.2 In addition, directly
+using computations overZt makes it difficult to handle important components of integer
+arithmetic such as bit shift and comparison.
+Instead of directly supporting Zt arithmetic for large t, the existing approaches
+often decompose t into several chunks to improve efficiency. For instance, several
+works [CKK16, XCWF16, QZL+19, ZQH+21, HZY+22] considered radix-2 arithmetic
+operations for handling integer computations. Similarly, [TLW+21, IZ21] decompose large
+modulus into smaller finite field elements, leading to efficient homomorphic comparison.
+By decomposing the desired plaintext modulust, one can keep the noise growth small while
+supporting efficient homomorphic operations like comparison and bit shifts. However, as
+modulo 2 (or2ℓfor smallℓ) plaintext space still has a limited number of slots, the SIMD
+capability or throughput is not as great as the case of NTT-friendly plaintext modulus.
+An alternative option is to use the other families, such as CGGI/DM or CKKS. Using
+CGGI/DM to handle integer computations is relatively well explored, and the major
+libraries like TFHE-rs [Zam22] allow standard power-of-two modulus integer computations
+by using lower precision arithmetic as a building block. On the other hand, using
+CKKS to handle integer computations is new (motivated in [DMPS24] and improved
+in [BCKS24, BKSS24, AKP25, KN25]) and has not yet been fully explored.3 For small
+precision like 4 or 8 bits, one can regard integers as real numbers and rely on CKKS
+operations, look-up tables [CKKL24], and modular reduction [KN25].4 For large precision,
+a straightforward approach is to use high-precision CKKS and directly supportZt for
+large power-of-two integert, but this has similar problems as in BGV/BFV, such as large
+parameters and lack of efficient comparison/bit shift.
+In this regard, it can be tempting to use a decomposition-based approach as in
+1The standard BGV/BFV bootstrapping (e.g. [MHWW24, GIKV23]) is a polynomial evaluation over
+a large modulus, leading to huge modulus consumption. For instance, the bootstrapping in [GIKV23] for
+251 modulus consumes ≈ 1000 bits for digit removal. Instead, one could use the BFV bootstrapping from
+CKKS [KSS24], but it needs many META-BTS [BCC+22] iterations.
+2IfM is odd,Φ M(X) splits intoϕ(M)/ ordM(2) irreducible factors, which corresponds to the number of
+slots [GV23, Section 2.3]. Hence there is at mostϕ(M)/ log2(M) slots (∵ ordM(2) ≥ log2(M)). Concretely,
+[GIKV23] usesM = 42799 and φ(42799)/21 = 2016 slots. For a similar ring dimensionφ(M) = 32768,
+CKKS hasφ(M) = 32768 real slots, which is more than an order of magnitude more.
+3For SIMD functional bootstrapping, one may consider other approaches (e.g. [MS18, LW23, PMH+25]),
+but we consider the CKKS-based approach for efficiency.
+4A concurrent work [NHY+25] focuses on avoiding XOR operations by relying on RLWE modular
+reduction (as in [KN25]).
+
+Jaehyung Kim 3
+BGV/BFV. Indeed, [ZYZ+24] suggests using decomposition to efficiently handle both
+homomorphic multiplication and comparison. However, their arithmetic operations do
+not modular reduce, and individual digits exceed the base and continuously grow. As
+a result, their approach cannot support bootstrapping and can evaluate only circuits of
+predetermined size. To support bootstrapping, we need to take care of the carries every
+time we perform homomorphic arithmetic operations. Since CKKS does not naturally
+support modular reduction, we need a different strategy than the ones in the BGV/BFV
+family. In this paper, we suggest using the modular reduction in [KN25] to efficiently
+instantiate fully homomorphic encryption over large unsigned integers (i.e. arithmetic over
+Z2k for largek).
+1.1 Technical Overview
+We provide a simplified overview of our method, focusing on how the underlying message
+behaves through homomorphic operations. At a high level, we decompose a large integer
+into digits and rely on the textbook addition/multiplication of a convolution form that
+computes iteratively from the lowest digit. Letd be the base for our digit decomposition,
+and lett = du be the target modulus. Our goal is to enableZt arithmetic using digit
+decomposition of based.
+Ingredients
+We rely on a homomorphic computing system that supports addition and multiplication
+over Z (up to a moderate precision) and modular reduction[·]d for somed∈Z>0.5 Such a
+homomorphic computer can be instantiated via the discrete variant of CKKS (based on
+[DMPS24, KN25]), which we discuss in detail in Section 2. The computing system has a
+particular efficiency property that modular reduction is much more costly than addition
+and multiplication. Due to this property, we need arithmetic algorithms that minimize the
+number of modular reductions.
+Reduction
+Let ∑u−1
+i=0 ai·di be a representation of a moduloZdu integer, where eachai could possibly
+be greater than or equal tod. The reduction operation converts it to a reduced form so
+that all the digits belong to{0,1,...,d−1}as in the standard representation. To minimize
+the number of modular reductions, we can iteratively compute theith digit starting from
+the least significant digit. To be precise, the iterations work as follows.
+• At step 0, we dividea0 byd and get quotient and remainderq0 and r0, respectively.
+We then setc1 :=q0 +a1.
+• At step1≤i<u −1, we divideci byd and get quotient and remainderqi and ri,
+respectively. We then setci+1 =qi +ai+1.
+• At stepu−1, we computeru−1 = [cu−1]d and output ∑u−1
+i=0 ri·di.
+This leads tou modular reductions in total.
+Difficulty
+Although the definition of reduction is straightforward, there is a hidden obstacle in the
+construction. That is, division byd consumes ciphertext modulus at least byd, leading
+to a continuous decline in modulus. In particular, the modulus ofci is at leastdi times
+smaller than that ofa0, significantly increasing the overall FHE parameters. To tackle this
+5The choice ofd affects the performance of the modular reduction. A typical choice is4-8 bits.
+
+4 Efficient Homomorphic Integer Computer from CKKS
+problem, we bootstrap some of theci’s using iterative discrete bootstrapping from [KN25].
+The number of bootstrapping iterations to bootstrapci depends on the size ofci: we may
+use βdiscrete bootstrappings forci≤dβ. It is important to keep the size of eachai small
+during homomorphic operations so that eachci becomes small.
+Multiplication
+We describe our multiplication algorithm, which can be written as a combination of
+convolutionandreduction. Let a = ∑u−1
+i=0 ai·di and b = ∑u−1
+i=0 bi·di bedigitdecompositions
+of two integersa,b∈Zdu. We observe that
+[ab]du =
+u−1∑
+i=0
+
+
+i∑
+j=0
+ajbi−j
+
+·di.
+Hence, to minimize the number of modular reductions, we first compute a possibly
+overflowing representation
+(∑i
+j=0ajbi−j
+)
+0≤i<d
+and reduce it afterwards. To count the
+number of bootstrappings needed in total, we measure the size of each∑i
+j=0ajbi−j. We
+choose u≤d so that ∑i
+j=0ajbi−j≤u·d2≤d3, resulting in≈3u bootstrappings.6
+Other Operations
+Our idea naturally extends to other operations, including addition, subtraction, comparison,
+and bit shift. Addition and subtraction work similarly to multiplication: we first perform
+digit-wise addition/subtraction and reduce afterward. Interestingly, a homomorphic
+comparison a≥b between twou-digit integersa and b can be interpreted as a special case
+of subtraction, as we can first computea−b as u + 1-digit subtraction and extract the
+highest digit. If the highest digit is0, then it means thata≥b, and otherwise the highest
+digit is−1. For a homomorphic shift operation by a scalar, we shift the digits and apply
+modular reductions. For instance, if we left shift byy <log2(d), then theith digit can be
+written as
+lo(ai <<y ) +hi(ai−1 <<y )
+where (a0,a1,...,au−1) is the input andlo and hi refers to remainder and quotient modulo
+d, respectively.
+As a result, our homomorphic computer is equipped with frequently used unsigned inte-
+ger operations with reasonable performance, serving as a perfect baseline for implementing
+any applications based on integer operations.
+1.2 Contribution
+We propose an efficient Single Instruction Multiple Data (SIMD) FHE over integers that
+supports a wide range of operations. In particular, our scheme provides three different
+types of operations, namely arithmetic operations, comparison, and bootstrapping. Note
+that these operations are the most important primitives of FHE and are necessary for
+most applications.
+Concrete Efficiency
+Among the schemes that support diverse operations, our scheme provides the best through-
+put. As we rely on CKKS, we enjoy almost the maximum parallelism possible (i.e.N/2
+6O(u2) homomorphic multiplications are negligible compared to theO(u) modular reductions as long
+as u is not too large.
+
+Jaehyung Kim 5
+slots), outperforming the approaches based on other FHE schemes. We compare the
+concrete performance on homomorphic multiplication and comparison in Table 1 and 2.
+Compared to the widely used TFHE-rs [Zam22], our multiplication and comparison are
+roughly three and two orders of magnitude faster, respectively. When compared with radix-
+based approaches using BGV/BFV, our multiplication and comparison are approximately
+two and one orders of magnitude faster, respectively.
+Table 1:Homomorphic multiplication overZ2k.
+k λ amortized time (ms)
+[HZY+22] 32 80 1020
+[Zam22] 32 128 6420
+64 25400
+Ours 32 ≈128 4.25
+64 8.85
+Table 2:Homomorphic comparison overZ264.
+λ # slots latency (sec) amortized time (ms)
+[TLW+21] > 80
+256 20.2 78.8
+128 20.5 160
+16 4.75 297
+[Zam22] 128 1 0.685 685
+Ours ≈128 16384 102 6.23
+Compared to the possible approaches that directly encode large integers without
+decomposition, our method achieves much smaller FHE parameters. As arithmetic over
+Zt for large t like 64-bit consumes a huge amount of modulus per multiplication, it
+is unavoidable for the direct encoding approaches to use large ring dimension such as
+logN = 17,18. On the other hand, we use an FHE parameter forZd to instantiate
+modulo at mostdd arithmetic, having significantly smaller parameters to achieve the same
+precision. Indeed, we were able to instantiate64-bit precision arithmetic usinglogN = 15
+parameters with only≈800 bits of modulus budget.
+Versatility
+Our scheme is not only efficient but also offers a variety of operations. Traditionally, SIMD
+schemes were only capable of computing addition and multiplication, leading to inefficiency
+in computing other types of functions. On the contrary, our scheme supports arithmetic,
+comparison, and shift operations, leading to a wider set of instructions to emulate the
+(unencrypted) computer. Furthermore, our scheme is compatible with the multi-precision
+arbitrary function evaluation in [AKP25], supporting any functions over unsigned integers.
+In addition, our method gives CKKS the ability to efficiently compute over large integers,
+which means that the capability of CKKS is extended to both real numbers and integers.
+As our encoding is directly compatible with the CKKS encoding, one can efficiently convert
+from our encoding to CKKS and vice versa, to maximize efficiency.
+Enhanced Security
+As the original CKKS cannot distinguish the error from the message, it was difficult
+for CKKS to achieve advanced security notions such asIND-CPAD security [LM21] or
+Threshold FHE security [AJL+12, BGG+18]. Since the discrete CKKS framework allows
+us to distinguish the error from the ciphertext by discretizing the message space, it can
+
+6 Efficient Homomorphic Integer Computer from CKKS
+enjoy the advantages of the exact schemes in terms of security. As we provide an efficient
+integer computer, discrete CKKS supports any operation without going through the
+original CKKS, leading to better security. For instance, one may use our homomorphic
+fixed point arithmetic instead of the usual CKKS operations to avoid large noise flooding
+needed to achieve advanced security.
+2 Preliminaries
+Let N >1 be a power of two integer andQ> 1 be an integer. LetR = Z[X]/(XN + 1)
+andRQ =R/QR. Let DFT : R[X]/(XN + 1)→CN/2 be a discrete Fourier transform
+(DFT) defined asm(X) ↦→
+(
+m(ζ5i
+)
+)
+0≤i<N/2
+where ζis a complex primitive2N-th
+root of unity. LetiDFT : CN/2→R[X]/(XN + 1) be its inverse.
+2.1 CKKS Basics
+In CKKS, there are two kinds of encoding called slots-encoding and coeffs-encoding. The
+slots-encoding Ecd : CN/2→Ris defined as
+Ecd(⃗ z) =⌊∆ ·iDFT(⃗ z)⌉
+where ∆ > 0 is a scaling factor. The slots-decodingDcd :R→CN/2 is defined as
+Dcd(m(X)) = 1
+∆ ·DFT(m(X)).
+The slots-encoding supports SIMD computations and is used as a default encoding for
+CKKS. Thecoeffs-encoding CoeffEcd : RN→Ris defined as
+CoeffEcd(⃗ z) =
+N−1∑
+i=0
+⌊∆ ·zi⌉·Xi
+where⃗ z= (z0,z1,...,zN−1), simply scaling up the vector and round. The coeffs-decoding
+CoeffEcd :R→RN is its approximate inverse defined as
+CoeffDcd
+(N−1∑
+i=0
+miXi
+)
+= 1
+∆ (m0,m1,...,mN−1).
+As coeffs-encoding is compatible with coefficient-wise operations, we use it for boot-
+strapping (to raise modulus), conversions to/from other schemes [BGGJ20], or modular
+reduction [KN25].
+In CKKS, each homomorphic multiplication increases the scaling factor from∆ to ∆ 2,
+and we rescale the ciphertext to keep the scaling factor to be≃∆ . As rescaling reduces
+the ciphertext modulus, the ciphertext modulus gradually decreases and cannot allow
+further multiplications at some point. TheCKKS bootstrapping[CHK+18] increases
+the modulus, recovering the multiplicative capability.
+Definition 1 (CKKS Bootstrapping). Let q,Q >1 be integers such thatQ > q. Let
+ct∈R2
+q be a CKKS ciphertext encrypting a vector⃗ z∈CN/2 via the slots-encoding, where
+both real and imaginary parts of each entry are in[−1,1]. The CKKS bootstrapping
+BTS :R2
+q→R2
+Q raises the modulus while approximately preserving the underlying message.
+That is,
+BTS(ct) = ct′∈R2
+Q
+where Dcd◦Dec(ct)≃Dcd◦Dec(ct′). Here Dec denotes the CKKS decryption, i.e., taking
+an inner product with a secret keysk = (1,s)∈R2.
+
+Jaehyung Kim 7
+The standard CKKS bootstrapping [CHK+18] can be simplified as a combination of
+modulus raising (denoted asModRaise) and modular reduction (denoted asEvalMod). If
+one embeds a CKKS ciphertextct∈R2
+q0 at the lowest modulusq0 into a larger modulusQ,
+a small integral error termI is added, and the underlying plaintext polynomialm becomes
+m +q0·I. The EvalMod procedure homomorphically evaluates a modular reduction to
+removeq0·I.
+An additional issue is thatModRaise and EvalMod are compatible with different encod-
+ing structures, coeffs-encoding and slots-encoding, respectively. Hence, we need to convert
+slots encoding to coeffs encoding and vice versa, denoted asStC and CtS, respectively.
+As a result, the CKKS bootstrapping is instantiated with the order ofStC-ModRaise-CtS-
+EvalMod, as illustrated in Algorithm 1.
+Algorithm 1:Slot Bootstrapping [BCC+22]
+Setting: ∆ ≪q0.
+Input : ct = Enc◦Ecd(⃗ z)∈R2
+q with⃗ z∈[−1,1]N/2.
+Output: ctout∈R2
+Q = Enc◦Ecd(⃗ w), where⃗ w≃⃗ z.
+1 ctout←EvalMod◦CtS◦ModRaise◦StC(ct);
+2 return ctout.
+2.2 Discrete CKKS
+The recent improvements in the discrete variant of CKKS (first formalized in [DMPS24])
+use a subspace ofC to handle discrete data. For instance, one may restrict the message
+space to Z⊂C. We observe that the inclusionZ ↪→C is a ring homomorphism, and
+addition and multiplication over integers are directly inherited from CKKS. Importantly,
+this framework allows us to distinguish the underlying error from the ciphertext, which
+was not possible in the original CKKS.
+Definition 2 (Discrete CKKS Ciphertext). Let U ⊆C be a finite set. A discrete
+CKKS ciphertext encrypting a vector⃗ z∈UN/2 is a CKKS ciphertextct that decrypts to
+⃗ z+⃗ e∈CN/2 where⃗ eis small. In this case, we call⃗ zand⃗ eas the underlying message and
+error of the discrete CKKS ciphertextct, respectively.
+As the error can be identified, we may reduce the error by evaluating a cleaning
+polynomial. For instance, [DMPS24] describes a cleaning functionh1(x) = 3x2−2x3 for
+the encoding setU ={0,1}⊂C. The functionh1 satisfiesh1(0) = 0 and h1(1) = 1, and
+has vanishing derivatives on{0,1}, thereby sending points close to0 and 1 closer to 0 and
+1, respectively.
+Definition 3(Cleaning). Let U⊆C be a finite set. Letct∈R2
+q be a discrete CKKS
+ciphertext encrypting a vector⃗ z∈UN/2 whose underlying error is⃗ e∈CN/2. The cleaning
+function maps ct to ct′, so that the underlying error ofct′, denoted as⃗ e′is much smaller
+than⃗ e.
+Discrete CKKS can efficiently handle two types of operations, namely arithmetic
+operations and interpolation. Arithmetic operation refers to addition and multiplication
+over Z inherited from CKKS, whereas interpolation refers to polynomial interpolations over
+a finite number of points on the complex plane. For interpolation, [CKKL24] suggests using
+complex roots-of-unity for polynomial interpolations, as it provides more numerically stable
+interpolation than the typical equispaced points on the real line (e.g.{0,1,...,d−1}⊆C).
+The power of interpolation is that one can evaluate an arbitrary function: Zd→C for some
+small integerd. Note that the original CKKS needs to rely on polynomial approximations
+and thus could not compute discontinuous functions efficiently.
+
+8 Efficient Homomorphic Integer Computer from CKKS
+Definition 4(Interpolation over roots-of-unity). Let Ud ={1,ω,...,ωd−1}⊆C where
+ωis a primitived-th root of unity. Let f : Zd →C be an arbitrary function. The
+homomorphic look-up tableLUTf :R2
+Q→R2
+Q homomorphically evaluates an interpolation
+that corresponds tof. That is,ωα∈Ud is mapped tof(α) for each slot.
+[BCKS24, BKSS24, AKP25] build an analogue of functional/programmable bootstrap-
+ping in CGGI/DM [CJP21, KS23] for discrete CKKS. In other words, they design new
+bootstrapping circuits dedicated to discrete data that evaluate an arbitrary function
+during bootstrapping. Notably, the CKKS-style functional bootstrapping (i.e. discrete
+bootstrapping) can be regarded as a parallelization of CGGI/DM bootstrapping which is
+several orders of magnitude faster than the state-of-the-art such as [Zam22]. We provide a
+(simplified) instantiation of discrete bootstrapping from [BKSS24] in Algorithm 2. Here
+EvalExp denotes a homomorphic evaluation of the complex exponential functionx↦→e2πix.
+Algorithm 2:Discrete Bootstrapping [BKSS24]
+Setting: U ={0,1,...,d−1}⊂C.
+Input : ct∈R2
+Q a discrete CKKS ciphertext encrypting⃗ z∈UN/2 . f : Zd→C
+an arbitrary function.
+Output: ctout encrypting f(⃗ z).
+1 ctout←LUTf◦EvalExp◦CtS◦ModRaise◦StC(ct);
+2 return ctout.
+More recently, [KN25] suggested using discrete bootstrapping to instantiate homo-
+morphic modular reduction. Recall that the original CKKS does not have an inherent
+modular reduction, unlike other schemes like BGV/BFV. The main reason is that CKKS
+encodes messages in the least significant bits via DFT, which is not compatible with
+modular reduction. However, [KN25] observed that we can indeed use the native modular
+reduction at the bottom modulus by incorporating discrete bootstrapping as a subroutine.
+For instance, simply choosingf as an identity function and inserting an RLWE modular
+reduction between ModRaise and StC gives a modular reduction by a smaller integerd
+denoted as IntModd. See Algorithm 3 for details.
+Algorithm 3: IntModd [KN25]
+Setting: id : Zd→Zd an identity map, and∆ 0 =q0/d.
+Input : ct∈R2
+Q a discrete CKKS ciphertext encrypting⃗ z∈ZN/2 .
+Output: ctout encrypting [⃗ z]d.
+1 ctout←LUTid◦EvalExp◦CtS◦ModRaise◦[StC(ct)]q0;
+2 return ctout.
+As a summary of the previous works, we provide a simplified overview of discrete
+CKKS in Figure 1. In discrete CKKS, there are three separated ciphertext formats
+providing different operations. Here, separated means that one can only perform one type
+of operation in a single format and needs to evaluate some (expensive) transformations
+to convert it to the other formats. To be specific, three formats can be denoted as
+arithmetic, coefficient, and interpolation formats. First, the arithmetic format refers to
+the usual CKKS slots-encoding, which supports addition and multiplication inherited
+from the original CKKS. In terms of discrete computations, one can use this type for
+integer additions and multiplications. Second, the coefficients format refers to the coeffs-
+encoded CKKS ciphertext at the bottom modulus. This type of ciphertexts are used
+to perform RLWE modular reduction as suggested in [KN25] or conversions between
+RLWE/MLWE/LWE (one may refer to [BCK+23]). Third, the interpolation format refers
+
+Jaehyung Kim 9
+Arithmetic
+(Z, in slots)
+Coefficient
+(Zd, in coeffs)
+Interpolation
+({1,ω,...,ωd−1}, in slots)
+StC
+EvalExp◦CtS◦ModRaiseLUTf
+Figure 1: Overview of Discrete CKKS
+to discrete CKKS ciphertexts encoded via roots-of-unity encoding as in [CKKL24], suitable
+for handling polynomial interpolations. It would usually be integrated with bootstrapping
+as in [BKSS24, AKP25], but one can specifically use this kind of encoding to handle
+arbitrary functions more efficiently. The arith-to-coeff, coeff-to-interpolate, interpolate-
+to-arith conversions can be instantiated withStC, EvalExp◦CtS◦ModRaise, and LUTf,
+respectively.
+3 Proposed Method
+In this section, we design a homomorphic computer that supports standard unsigned
+integer computations (e.g. 64-bit arithmetic), on top of the discrete CKKS framework
+introuced in the previous section. Lett = 2k be the target modulus for which we want to
+evaluate. As a high-level overview, we decomposet via a digit decomposition by a smaller
+modulus d = 2ℓand handle modulot computation using several modulod computations.
+For instance, we may choosek = 64 and ℓ= 4, leading to evaluating 64-bit computation
+using k/ℓ= 16 digits of modulo2ℓ= 16 computations.
+3.1 Scheme Description
+We first illustrate how we putk-bit data into discrete CKKS ciphertexts. The message in
+our encoding is a vector ofk-bit integers⃗ z= (z0,z1,...,zN/2−1)∈ZN/2
+t . To encrypt this
+vector, we useu =k/ℓciphertexts ct0,ct1,...,ctu−1 where cti encrypts theith digit of
+the base-d representation of⃗ z. That is,
+cti = Enc◦Ecd(z0i,z1i,...,z(N/2−1)i)
+where zj =zj(u−1)zj(u−2)···zj0 (d) for each 0≤j <N/2. Here, each ciphertextcti for
+0≤i<u is a valid discrete CKKS ciphertext forZd computations. Therefore, we may use
+any operations in the prior works of discrete CKKS, such as arithmetic operations, table
+look-ups, and modular reduction. In particular, we mainly rely on addition, multiplication,
+and modular reduction to handle ring operations overZd as well as the carry operation.
+To keep the discrete bootstrapping forZd efficient, we choosed to be sufficiently small
+(e.g. d≤28). In terms of cleaning, we may use digit-wise cleaning forZd (e.g. cleaning for
+d-th roots of unity as in [CKKL24]). We elaborate on the encryption scheme as follows.
+• Encryption: Let ⃗ z= (z0,z1,...,zN/2−1)∈ZN/2
+t be a vector ofk-bit unsigned
+integers. The encryptionIntEnc : ZN/2
+t →(R2
+Q)u is defined as
+IntEnc(⃗ z) =
+(
+Enc◦Ecd(z0i,z1i,...,z(N/2−1)i)
+)
+0≤i<u
+where zj = zj(u−1)zj(u−2)···zj0 (d) is the base d representation of zj for each
+0≤j <N/2.
+
+10 Efficient Homomorphic Integer Computer from CKKS
+• Decryption: Let ct = (ct0,ct1,...,ctu−1) be a vector of discrete CKKS ciphertexts.
+The decryption IntDec : (R2
+Q)u→ZN/2
+t is defined as
+IntDec(ct) =
+u−1∑
+i=0
+⌊Dcd◦Dec(cti)⌉·di.
+• Bootstrapping: Given a ciphertextct = (ct0,ct1,...,ctu−1) encrypting a vector
+⃗ z∈ZN/2
+t , the bootstrappingBoot : (R2
+q)u→(R2
+Q)u is defined as
+Boot(ct) = (IntBootd(cti))0≤i<u
+where IntBootd :R2
+q→R2
+Q refers to an identity discrete bootstrapping (i.e. functional
+bootstrapping evaluating an identity function) forZd. For simplicity, we assume
+that this bootstrapping not only raises the modulus but also reduces the noise. See
+[BKSS24, AKP25] for details.
+Theorem 1(Encryption Correctness). Let⃗ z= (z0,z1,...,zN/2−1)∈Zu
+t be a vector of
+k-bit unsigned integers. Then we have
+IntDec◦IntEnc(⃗ z) =⃗ z.
+Proof. Observe that zj = ∑u−1
+i=0 zji·di from the base-d representation of zj. By the
+correctness of CKKS encryption and decryption, we have
+IntDec◦IntEnc(⃗ z) =
+u−1∑
+i=0
+(z0i,z1i,...,z(N/2−1)i)·di
+=
+(u−1∑
+i=0
+zji·di
+)
+0≤j<N/2
+= (z0,z1,...,zN/2−1) =⃗ z.
+Theorem 2(Bootstrapping Correctness). Let ct∈(Rq)u be a ciphertext encrypting a
+vector⃗ z∈ZN/2
+t according to the above encryption. Then we have
+IntDec◦Boot(ct) =⃗ z.
+Proof. Let ct = (ct0,ct1,...,ctu−1)and⃗ z= (z0,z1,...,zN/2−1). Letzj =zj(u−1)zj(u−2)···zj0
+(d)bethebase- drepresentationof zj foreach 0≤j <N/2. Let⃗ wi = (z0i,z1i,...,z(N/2−1)i)∈
+ZN/2
+d be a vector ofℓ-bit unsigned integers for each0≤i < u. Then by the definition
+of the encryption, we have thatcti is a valid discrete CKKS encryption of⃗ wi for eachi.
+Recall that the bootstrapping forct is defined as an element-wise integer bootstrapping,
+which means that the components ofBoot(ct) are the bootstrappings ofcti. Therefore, we
+have
+IntDec◦Boot(ct) =
+u−1∑
+i=0
+⌊Dcd◦Dec◦Boot(cti)⌉·di =
+u−1∑
+i=0
+⌊Dcd◦Dec(cti)⌉·di =⃗ z.
+The second equality follows from the correctness ofIntBootd.
+
+Jaehyung Kim 11
+3.2 Arithmetic Operations
+Based on the encryption scheme defined in the previous subsection, we describe how we
+define homomorphic arithmetic operations overZt. We not only provide simple addition
+and multiplication but also some popular operations (e.g. comparison, bit shift) that are
+defined over unsigned integers. Recall thatIntModd is a homomorphic modular reduction
+by Zd as defined in Algorithm 3 andCarryd = (id−IntModd)/d.7
+• Reduction: Let ct = (ct0,ct1,...,ctu−1)∈(R2
+Q)u be a vector of discrete CKKS
+ciphertexts encrypting vectors inZN/2. The modular reduction ofct is sequentially
+defined as
+Reduce(ct) = (ct′
+0,ct′
+1,...,ct′
+u−1)
+where ct′
+0 = IntModd(ct0), ct′′
+0 = Carryd(ct0), and
+ct′
+i = IntModd(ct′′
+i−1 + cti), ct′′
+i = Carryd(ct′′
+i−1 + cti)
+for each1≤i<u . The result ofReduce encrypts a message
+u−1∑
+i=0
+⌊Dcd◦Dec(cti)⌉·di
+modulo t, i.e., reducing the ciphertextct to the correct base-d representation. Let
+Carry(ct) be defined asct′′
+u−1.
+• Addition: Let ct = (cti)0≤i<u,ct′= (ct′
+i)0≤i<u∈(R2
+Q)u be vectors of ciphertexts
+each encrypting ak-bit unsigned integer according to the encryption scheme in
+Section 3.1. The addition ofct and ct′is defined as
+Add(ct,ct′) = Reduce((cti + ct′
+i)0≤i<u)
+where the addition on the right-hand side is the usual CKKS addition.
+• Subtraction: Let ct = (cti)0≤i<u,ct′= (ct′
+i)0≤i<u∈(R2
+Q)u be vectors of ciphertexts
+each encrypting ak-bit unsigned integer according to the encryption scheme in
+Section 3.1. The subtraction ofct and ct′is defined as
+Sub(ct,ct′) = Reduce((cti−ct′
+i)0≤i<u)
+where subtraction on the right-hand side is the usual CKKS subtraction.
+• Multiplication: Let ct = ( cti)0≤i<u,ct′= ( ct′
+i)0≤i<u ∈(R2
+Q)u be vectors of
+ciphertexts each encrypting ak-bit unsigned integer according to the encryption
+scheme in Section 3.1. The multiplication ofct and ct′is defined as
+Mult(ct,ct′) = Reduce
+
+
+
+
+i∑
+j=0
+Mult(ctj,ct′
+i−j)
+
+
+0≤i<u
+
+
+where Mult on the right-hand side refers to the usual CKKS multiplication.
+• Comparison: Let ct = (cti)0≤i<u,ct′= (ct′
+i)0≤i<u∈(R2
+Q)u be vectors of cipher-
+texts each encrypting ak-bit unsigned integer according to the encryption scheme in
+Section 3.1. The comparisonct≥ct′is defined as
+ct≥ct′= Carry(ct−ct′) + 1
+which outputs1 for true and0 for false.
+7Note that Carryd(ct) may be at a lower level thanct. This may lead to modulus consumption and
+bootstrapping, but we consider the efficiency aspect in the later subsection.
+
+12 Efficient Homomorphic Integer Computer from CKKS
+• Left Shift: Let ct = (ct0,ct1,...,ctu−1)∈(R2
+Q)u be a vector of ciphertexts encrypt-
+ing ak-bit unsigned integer according to the encryption scheme in Section 3.1. Let
+0≤m<k be an integer. The left shift ofct bym denoted as ct<<m is defined as
+ct<<m = (IntModd(cti−x <<y ) + Carryd(cti−x−1 <<y ))0≤i<u
+where x =⌊m/ℓ⌋, y = [m]ℓ, and cti = 0 for i< 0.
+• Right Shift: Let ct = ( ct0,ct1,...,ctu−1)∈(R2
+Q)u be a vector of ciphertexts
+encrypting ak-bit unsigned integer according to the encryption scheme in Section 3.1.
+Let 0≤m < kbe an integer. The right shift ofct by m denoted as ct >> mis
+defined as
+ct>>m = (Carryd(cti+x << (ℓ−y)) + IntModd(cti+x+1 << (ℓ−y)))0≤i<u
+where x =⌊m/ℓ⌋, y = [m]ℓ, and cti = 0 for i≥u.
+Theorem 3(Arithmetic Correctness). Reduction, Addition, Subtraction, Multiplication,
+Comparison, Right Shift, and Left Shift, defined above, are correct.
+Proof. We give proof for each operation.
+• Reduction: It suffices to show that
+u−1∑
+i=0
+⌊Dcd◦Dec(ct′
+i)⌉·di≡t
+u−1∑
+i=0
+⌊Dcd◦Dec(cti)⌉·di.
+By mathematical induction, we first check that
+⌊Dcd◦Dec(ct′′
+j )⌉=
+⌊ ∑j
+i=0⌊Dcd◦Dec(cti)⌉·di
+dj
+⌋
+holds for eachj. Again, we use mathematical induction and get
+j∑
+i=0
+⌊Dcd◦Dec(ct′
+i)⌉·di =
+[j∑
+i=0
+⌊Dcd◦Dec(cti)⌉·di
+]
+dj+1
+for eachj. By plugging inj =u−1, we finish the proof.
+• Addition/Subtraction: We first check that
+u−1∑
+i=0
+⌊Dcd◦Dec(cti±ct′
+i)⌉·di =
+u−1∑
+i=0
+⌊Dcd◦Dec(cti)⌉·di±
+u−1∑
+i=0
+⌊Dcd◦Dec(ct′
+i)⌉·di
+from the decryption correctness of(cti)i and (ct′
+i)i. Then by the correctness of
+reduction, we have the correctness of addition/subtraction.
+• Multiplication: We first check that
+u−1∑
+i=0
+Dcd◦Dec
+
+
+i∑
+j=0
+Mult(ctj,ct′
+i−j)
+
+
+
+
+·di
+=
+u−1∑
+i=0
+
+
+i∑
+j=0
+⌊Dcd◦Dec(ctj)⌉⊙⌊Dcd◦Dec(cti−j)⌉·di
+
+
+≡t
+(u−1∑
+i=0
+⌊Dcd◦Dec(cti)⌉·di
+)
+⊙
+(u−1∑
+i=0
+⌊Dcd◦Dec(ct′
+i)⌉·di
+)
+by the decryption correctness. Then, by the correctness of reduction, we have the
+correctness of multiplication.
+
+Jaehyung Kim 13
+• Comparison: We observe that given an integerx, the corresponding carry operation
+computes (x−[x]t)/t. Let ct′−ct encrypts an integer vector⃗ z∈ZN/2 according to
+the decryption function in Section 3.1. Since bothct and ct′encrypt unsignedk-bit
+integers, we have−t<z i <t for each entryzi for⃗ z. In particular, theith entry of
+ct is greater than or equal to theith entry ofct′if and only ifzi≥0. Note that
+the carry operation outputs0 when 0≤zi <t and outputs−1 when−t<z i < 0.
+Therefore, we have thatCarry(ct−ct′) + 1encrypts the right result.
+• Left shift: It suffices to check the base-d representation of the left shift of the original
+message. Letα=αu−1αu−2···α0 be the base-d representation of an unsignedk-bit
+integer α. Let β= βu−1βu−2···β0 be the base-d representation ofα << m. For
+eachi,
+βi = [αi−x <<y ]d +
+⌊αi−x−1 <<y
+d
+⌋
+.
+This proves the correctness.
+• Right shift: It suffices to check the base-d representation of the right shift of the
+original message. Let α= αu−1αu−2···α0 be the base-d representation of an
+unsigned k-bit integerα. Let β=βu−1βu−2···β0 be the base-d representation of
+α>>m. For eachi,
+βi = [αi+x+1 << (ℓ−y)]d +
+⌊αi+x << (ℓ−y)
+d
+⌋
+.
+This proves the correctness.
+3.3 Efficiency Analysis
+We analyze the computational efficiency of each operation by counting the number of
+discrete bootstrappings. Note that discrete bootstrapping is usually> 100 times more
+costly than any other homomorphic operations (e.g. addition, multiplication), so it gives a
+good approximation of the computational complexity.
+Theorem 4(Reduction Complexity). Let
+ct = (ct0,ct1,...,ctu−1)∈(R2
+Q)u
+be a vector of ciphertexts encrypting integer vectors in[0,dm−dm−1], whereQ≫dm.
+Then the number of discrete bootstrappings used to instantiate theReduce operation is
+≤um−m + 1.
+Proof. We provide an algorithm with at mostum−m + 1 bootstrappings. Recall that
+Reduce consists ofu IntModd and u−1 Carryd. The main issue is that the definition of
+Carryd includes homomorphic division byd, which consumes modulus. To handle this
+issue, we keep all thecti’s,ct′
+i’s,ct′′
+i’s at the bootstrapping (output) level via discrete
+bootstrapping. To do this, we instantiateCarryd with the iterative bootstrapping in [KN25].
+The key observation is thatct′′
+i−1 + cti decrypts to an element<d m, which can be proved
+by mathematical induction oni.
+• Base casei = 0: cti decrypts to≤dm−dm−1 <d m.
+• Assume i and provei + 1: Assume thatct′′
+i−1 + cti decrypts to<d m. Then by the
+definition of Carryd, ct′′
+i decrypts to<d m−1. Thus, ct′′
+i + cti+1 decrypts to
+<d m−1 +dm−dm−1 =dm.
+
+14 Efficient Homomorphic Integer Computer from CKKS
+• By mathematical induction, we proved the desired property.
+Therefore, Carryd can be instantiated with IntBootm−1
+d of [KN25, Algorithm 2] which
+requiresm−1 discrete bootstrappings. As a result, we instantiateReduce withu·1 + (u−
+1)·(m−1) =um−m + 1 discrete bootstrappings.
+Corollary 1(Addition/Subtraction Complexity). The number of bootstrappings needed
+for addition/subtraction is≤2u−1.
+Proof. It follows directly from the fact that[0,d) + [0,d) = [0,2d−1) and [0,d)−[0,d) =
+(−d,d) whose lengths are≤d2−d.
+Corollary 2(Comparison Complexity). The number of bootstrappings needed for compar-
+ison is≤2u.
+Proof. Recall that the comparison operation does exactly the same as the subtraction,
+except for the last carry step. Hence, we need2u−1 + 1 = 2u discrete bootstrappings.
+Theorem 5 (Multiplication Complexity). Suppose that k ≤ℓ·2ℓ. The number of
+bootstrappings needed for multiplication is≤3u−2.
+Proof. Recall that theMult operation heavily relies on theReduce operation. Hence, it
+suffices to check the size of the underlying message of
+Mi =
+i∑
+j=0
+Mult(ctj,ct′
+i−j).
+As each ctj and ct′
+j decrypts to aℓ-bit unsigned integer, we have that each coordinate of
+the decryption ofMi is less than or equal to
+(2ℓ−1)·(2ℓ−1)·u = (d−1)2·u≤(d−1)2·d<d 3−d2.
+Hence, by Theorem 4, the number of bootstrappings needed is at most3d−2.
+Theorem 6(Shift Complexity). The number of bootstrappings needed for the right/left
+shift operation is≤u−x.
+Proof. Wefirstprovetheleftshiftoperation. Observethatweneedtocompute IntModd(cti <<
+y) for 0≤i < u−x and Carryd(cti << y) for 0≤i < u−x−1. We can compute
+IntModd(cti <<y ) for 0≤i<u −x using u−x discrete bootstrappings. The remaining
+Carryd’s can be computed without introducing additional discrete bootstrappings. Hence
+u−x in total.
+The right shift operation works exactly the same except that theIntModd is needed for
+index x≤i<u and Carryd is needed for indexx + 1≤i<u .
+We summarize the analyses in Table 3.
+Table 3:Number of discrete bootstrapping used in each operation.
+Operation Name Number of Discrete Bootstrapping
+Addition ≤2u−1Subtraction
+Multiplication 8≤3u−2
+Comparison ≤2u
+Right/Left Shift ≤u−x
+8Under the assumption thatk ≤ ℓ·2ℓ.
+
+Jaehyung Kim 15
+Next, we discuss some optimization techniques that can further reduce the computa-
+tional complexity. The first optimization is to reduce the number of discrete bootstrapping
+by lazily bootstrappingCarryd. For instance, one may bootstrap for everyγ(instead of
+1) Carryd when evaluating Reduce as in Theorem 4. Although it reduces the number of
+bootstrapping by a factorγ, it increases the modulus consumption by a factorγ, so one
+should carefully examine the efficiency to find a sweet spot.
+Theorem 7 (Lazy Bootstrap). Let ct = ( ct0,ct1,...,ctu−1)∈(R2
+Q)u be a vector of
+ciphertexts encrypting integer vectors in[0,dm−dm−1], whereQ≫dγm. Then there is an
+instantiation of Reduce that uses at mostm·⌊(u−1)/γ⌋+u bootstrappings anddm+γ−1
+of modulus.
+Proof. We may instantiate exactly as in the proof of Theorem 4, except that we lazily
+bootstrap for Carryd. To be explicit, we first obtainct′′
+i (via Carryd operation with lazy
+bootstrapping) sequentially and computect′
+i at the end (viau discrete bootstrappings).
+Here we may choose the ciphertext modulus ofct′′
+i to be a factord smaller than that of
+ct′′
+i−1 for γ∤i and bootstrap atγ|i. As a result, the ciphertext modulus forct′′
+i becomes
+Q/d[i]γ. Recall that the modulus consumption for the last bootstrapping (i.e. the iterative
+bootstrapping in [KN25]) isdm and the number of bootstrapping ism. Hence the total
+modulus consumption isdm·dγ−1 =dm+γ−1, and the total number of bootstrapping is
+m·(# of bootstrap forCarryd) +u·(# of bootstrap forIntModd) =m·⌊(u−1)/γ⌋+u.
+Another observation is that we may reduce lazily, especially in addition/subtraction.
+For instance, if we add three ciphertext vectorsct,ct′,ct′′∈(R2
+Q)u, we may define the
+addition of them as
+Add(ct,ct′,ct′′) = Reduce((cti + ct′
+i + ct′′
+i )0≤i<u)
+hence saving oneReduce operation. We formalize this observation in the following theorem.
+Theorem 8 (Lazy Addition). Let ct0,ct1,...,ctv−1∈(R2
+Q)u be vectors of ciphertexts
+encrypting unsignedk-bit integer vectors according to the encryption scheme in Section 3.1,
+wherev≤d. The addition ofct0,ct1,...,ctv−1 can be instantiated as
+Reduce
+
+
+
+
+v−1∑
+j=0
+ctj
+i
+
+
+0≤i<u
+
+
+with≤2u−1 discrete bootstrappings.
+Proof. By Theorem 4, we only need to check that for eachi, ∑v−1
+j=0 ctj
+i decrypts to an
+integer vector whose entries are in[0,d2−d]. To check this, we use the fact thatctj
+i
+decrypts to an integer vector whose entries are in[0,d−1]. Then, by summing up at most
+d such ciphertexts, we get the desired property.
+Thus, we may lazily reduce after adding≤d ciphertext vectors.
+3.4 Implications
+We discuss some direct applications of our method, namely fixed-point arithmetic and
+arbitrary function evaluation over unsigned integers.
+
+16 Efficient Homomorphic Integer Computer from CKKS
+3.4.1 Fixed Point Arithmetic
+As our scheme supports both multiplication and shift operations, it immediately supports
+fixed-point multiplication, which can be written as a combination of multiplication of
+two m bit integers and right shift bym. However, we may do much better than this
+because the fixed-point multiplication can be regarded as computing the high part of the
+multiplication.
+• Extended Reduction: Let ct = ( ct0,ct1,...,ct2u−1)∈(R2
+Q)2u be a vector of
+discrete CKKS ciphertexts encrypting vectors inZN/2. The (extended) modular
+reduction of ct is sequentially defined as
+ExtReduce(ct) = (ct′
+0,ct′
+1,...,ct′
+2u−1)
+where ct′
+0 = IntModd(ct0), ct′′
+0 = Carryd(ct0), and
+ct′
+i = IntModd(ct′′
+i−1 + cti), ct′′
+i = Carryd(ct′′
+i−1 + cti)
+for each1≤i< 2u. The result ofReduce encrypts a message
+2u−1∑
+i=0
+⌊Dcd◦Dec(cti)⌉·di
+modulo t2, i.e., reducing the ciphertextct to the correct base-d representation.
+• Extended Multiplication: Let ct = ( cti)0≤i<u,ct′= ( ct′
+i)0≤i<u ∈(R2
+Q)u be
+vectors of ciphertexts each encrypting ak-bit unsigned integer according to the
+encryption scheme in Section 3.1. The extended multiplication ofct and ct′is defined
+as
+ExtMult(ct,ct′) = ExtReduce
+
+
+
+
+min(i,u−1)∑
+j=max(0,i−u+1)
+Mult(ctj,ct′
+i−j)
+
+
+0≤i<2u
+
+
+where Mult on the right-hand side refers to the usual CKKS multiplication. The
+output vector contains the element-wise product of two input integer vectors, without
+modular reduction byt.
+One may simply take the lastu entries of the result of the extended multiplication to
+instantiate ak-bit precision fixed-point multiplication. Recall that CKKS often struggles to
+satisfy the security notions likeIND-CPAD [LM21] or Threshold FHE [AJL+12, BGG+18]
+as they cannot separate noise from the message. Although our fixed-point arithmetic is
+much slower than the usual CKKS operations (as it involves bootstrapping), we may avoid
+huge flooding which greatly increases the parameters.
+3.4.2 Arbitrary Function Evaluation
+As our encoding stores a large integer after decomposing it into small pieces, we may directly
+benefit from the multi-precision arbitrary function evaluation in [AKP25, Section 5.3].
+Since we maintain the digit-decomposed format, we do not need to perform digit extraction
+in [AKP25]. We restate (and slightly modify) the arbitrary function evaluation framework
+as follows.
+Let f : Zt→C be an arbitrary function,φ: Zt→Zu
+d be the digit decomposition, and
+ψ: Zd→Ud ={1,ω,...,ωd−1}be defined asx↦→ω2πixwhere ωis a complexdth root of
+unity. Letp∈C[x0,...,xu−1] be a multivariate polynomial that interpolates the function
+
+Jaehyung Kim 17
+Algorithm 4:Arbitrary Function Evaluation [AKP25]
+Input : ct = (cti)0≤i<u∈(R2
+Q)u a ciphertext vector encrypting⃗ z∈ZN/2
+t .
+f : Zt→C an arbitrary function.
+Output: ctout encrypting f(⃗ z).
+1 for i←0 to u−1 do
+2 ct′
+i←EvalExp◦CtS◦ModRaise◦StC(cti);
+3 end for
+4 ctout←MLUTf(ct′
+0,ct′
+1,...,ct′
+u−1);
+5 return ctout.
+f◦φ−1◦ψ−1 :Uu
+d→C. Then the homomorphic evaluation ofp instantiatesf (starting
+from complex roots of unity). We denote such an operation asMLUTf. We illustrate the
+algorithm in Algorithm 4.
+It is worth mentioning that such functionality cannot be supported if one handles large
+integers directly inside CKKS. One reason is that univariate interpolation consumes much
+more multiplicative depths than multivariate interpolation, and another reason is that
+large precision polynomial interpolation is numerically unstable.
+4 Experiments
+We provide proof-of-concept implementations for the algorithms described in the previous
+section. We developed our code upon the lattigo library [lat24]. The experiments are run
+single-threaded on Apple M4 Max with 128GB of RAM running macOS Sequoia 15.5. All
+of our FHE parameters satisfy≈128 bit security according to [BTH22].
+4.1 Description
+We start with providing a parameter set used for our experiments, in Table 4. HereN
+denotes the RLWE ring dimension,logQP denotes the maximum RLWE modulus for
+switching keys,(h,˜h)denotes the Hamming weights of the dense and sparse secrets [BTH22],
+and dnum denotes the gadget rank for the switching keys. The lower table describes the
+moduli chain, wherelogqi denotes the ciphertext modulus andlogpj denotes the auxiliary
+modulus for key switching.Base, StC, Mult, LUT, EvalExp, and CtS denote the moduli
+reservedforthecorrespondingoperationsinthediscretebootstrappingframework[ BKSS24].
+When denoted asX×Y, it refers to usingY manyX-bit (NTT) moduli.
+Table 4:Parameter set for the experiments.
+logN logQP (h,˜h) dnum
+15 768 (192,32) 7
+logqi logpjBase StC Mult LUT EvalExp CtS
+36 28×2 36 36×5 36×8 32×2 36×3
+Next, we elaborate on the scheme parameters of our experiments. We targeted64-bit
+operations, decomposing it into4-bit pieces, resulting in a total of16 pieces. In other
+words,k = 64, ℓ= 4, andu = 16. Note thatk≤2ℓ·ℓ, which satisfies the condition for
+Theorem 5. For the homomorphic modular reduction instantiation, we followed [KN25],
+which relies on the discrete bootstrapping from [BKSS24]. In particular, we used the
+cleaning interpolation (via Hermite interpolation) so that our bootstrapping achieves both
+modulus raising and cleaning.
+
+18 Efficient Homomorphic Integer Computer from CKKS
+We implemented addition, subtraction, multiplication, comparison, and right shift
+operations relying on the algorithms in Section 3.2. In particular, we used the strategy to
+bootstrap every time we computeCarryd, which was mainly used in the correctness proofs.
+This corresponds to the equality case in Table 3.
+The experimental results are illustrated in Table 5. Here the error is measured by
+subtracting the decrypted result from the desired result. The precision denotes mean
+and minimum precision, which are computed as−log2 of the mean and maximum error,
+respectively. We observe that the total running time is roughly proportional to the number
+of bootstrappings, as expected.
+Table 5:Experimental results for64-bit homomorphic operations, based on the algorithms
+in Section 3.2 except shifting.
+# Bootstrap Running time Precision
+Addition 31 96.8 sec (16.5,11.1)
+Subtraction 31 99.1 sec (16.5,11.3)
+Multiplication 46 145 sec (14.2,6.62)
+Comparison 32 102 sec (17.1,12.9)
+To check the cost of left and right shift operations, we checked if it is linear inx =⌊m/d⌋
+as expected. We fixedy = 1 for the right shift andy = 2 for the left shift, and plotted
+the graph in Figure 2. Not only the linearity but also the fact that the cost of shift is
+independent ofy was observed.
+0 10 20 30 40 50 600
+10
+20
+30
+40
+50
+Shift Amount (m)
+Running Time (sec)
+Right Shift(y = 1)
+Left Shift (y = 2)
+Figure 2: Running time of right/left shift operations.
+4.2 Comparison with Prior Works
+We mainly compare our algorithm with [Zam22] as it supports all the operations we
+discussed in Section 3.2. We ran their benchmark9 in the same environment as our
+experiments (e.g. same machine, single-thread, etc.). The figures are illustrated in
+Table 6. Our algorithm outperforms [Zam22] by2-3 orders of magnitude, depending on
+the operations, in terms of throughput. Notably, our homomorphic64-bit multiplication is
+9We executed integer_bench from TFHE-rs [Zam22], commit hash 3129520.
+
+Jaehyung Kim 19
+more than 2800 times faster. To compare latency, our multiplication becomes favorable as
+soon as we have≥6 parallelism.
+Table 6:Comparison with TFHE-rs [Zam22] on64-bit operations.
+Latency (sec) Amortized time (ms)
+[Zam22] Ours [Zam22] Ours
+Addition 0.928 96.8 928 5.91 157x
+Subtraction 0.930 99.1 930 6.05 154x
+Multiplication 25.4 145 25400 8.85 2870x
+Comparison 0.685 102 685 6.23 110x
+Right Shift10 0.467 50.2 467 3.06 153x
+Left Shift 0.467 49.2 467 3.00 156x
+Next, we dive deeper into homomorphic multiplications and see how the target modulus
+t = 2k affects the performance. We compare our multiplication with [Zam22] fork =
+4,8,16,32,64, and check both latency and throughput. The figures can be seen in Table 7.
+Since our method is asymptotically almost linear ink but [Zam22] is not, the performance
+difference is widened for largek. Although we experimentedk≤64 (due to the constraint
+k≤ℓ·2ℓ), our method can be easily extended by increasingℓ. We expect that our method
+should perform even better for largerk.11
+Table 7:Comparison with TFHE-rs [Zam22] on multiplications of different sizes.
+k = log2t Latency (sec) Amortized time (ms)
+[Zam22] Ours [Zam22] Ours
+4 0.0872 3.16 87.2 0.193 452x
+8 0.408 12.6 408 0.769 531x
+16 1.62 31.2 1620 1.90 853x
+32 6.42 69.6 6420 4.25 1510x
+64 25.4 145 25400 8.85 2870x
+We move on to other possible approaches based on SIMD schemes. Note that most
+works do not cover multiplication, comparison, and bootstrapping at the same time. For
+instance, [ZYZ+24] achieves good performance for both homomorphic multiplication and
+comparison, but the encoding formats for the two operations are different and do not have
+efficient conversions from one to another. In this regard, we focus on decomposition-based
+works that seem to naturally support all three operations we are interested in.
+Forarithmeticoperations (addition andmultiplication), wecomparewith[ HZY+22], the
+state-of-the-art method for radix-2 homomorphic addition/multiplication. We borrowed the
+figures from [HZY+22, Table V and VIII], which uses a similar environment for experiments.
+As illustrated in Table 8, our addition is4−8 times faster for computing32/64-bit additions,
+and our multiplication is240 times faster for evaluating32-bit multiplication.
+For homomorphic comparison, we compare with [TLW+21], which introduces the
+vector of field elements (VFE) encoding to efficiently evaluate large precision comparison.
+Although their latency is much better than ours, we outperform in terms of throughput
+due to the large parallelism of CKKS. The details are illustrated in Table 9.
+10For right/left shift, we considered the smallestx which gives the largest running time for our method.
+11Whenℓ>4, one may need to choose a largerN than Table 4. Roughly, this leads to2 to 4 times larger
+bootstrapping latency. The noise can be controlled similarly. See [BKSS24] for details about scalability, as
+we directly rely on their discrete bootstrapping. As mentioned earlier, the number of bootstrappings for
+each homomorphic operation scales linearly withk, given a fixedℓ.
+12Borrowed from [TLW+21, Table 1]. Excluded Step (c) from the total time. Note that [IZ21] provides
+a more efficient solution (≈ 2x faster), but they did not measure timings for modulo264.
+
+20 Efficient Homomorphic Integer Computer from CKKS
+Table 8:Comparison with [HZY+22] on arithmetic operations.
+k λ amortized time (ms)
+Addition
+[HZY+22] 32 80 24
+64 24
+Ours 32 ≈128 2.90
+64 5.91
+Multiplication [HZY+22] 32 80 1020
+Ours 32 ≈128 4.25
+Table 9:Homomorphic comparison overZ264, compared with [TLW+21].
+λ # slots latency (sec) amortized time (ms)
+[TLW+21]12 > 80
+256 20.2 78.8
+128 20.5 160
+16 4.75 297
+Ours ≈128 16384 102 6.23
+One could also consider comparing our homomorphic comparison with the usual CKKS
+comparison [CKK20, LLKN22]. In [LLKN22, Table 7], they show≈30 seconds for 20 bit
+precision homomorphic comparison, but do not show higher precision implementations.
+Asymptotically, the approximation based methods achieveO(α) computational complexity
+for a precision parameterα[CKK20, Table 2]. Forα= 64 bit precision, their performance
+can be roughly estimated as 30×(64/20) = 96 seconds. Note that the asymptotic
+complexity only counts the number of homomorphic operations. For increasedα, one
+needs to choose a higher scaling factor∆ , leading to higher modulusq and higher ring
+degree N, significantly increasing the running time.13 In addition, their methods are not
+directly compatible with our approach, as our encoding stores64 bit integers in many
+low-precision discrete CKKS ciphertexts.
+Memory. The public evaluation keys used in our method is exactly the same as the
+bootstrapping keys for the base discrete bootstrapping [BKSS24]. For instance, each
+evaluation key of the parameter set in Table 4 is of size77 MiB, and there can be (roughly)
+8 to 50 of them depending on the bootstrapping optimizations [HS18], leading to0.6 to 4
+gigabytes. The ciphertext size depends on the plaintext modulust = 2k, in the sense that
+there arek/ℓCKKS ciphertexts per each large precision ciphertext. Concretely, a single
+k = 64 bit ciphertext (withℓ= 4) at the highest level4 is 2 MiB×(k/ℓ) = 32 MiB, and it
+becomes 64 MiB whenk = 128.
+When compared to methods based on BGV-like schemes, both the evaluation key and
+ciphertext sizes are similar. For example, for32 bit multiplication, [HZY+22, Table 8]
+used 0.680 to 28.0 GB of memory. On the other hand, CGGI/DM based approaches
+(e.g. [Zam22]) use far less memory. Their functional/programmable bootstrapping often
+needs bootstrapping key size of less than a hundred megabytes [LMSS23, Table 6], which
+is an order of magnitude smaller than (discrete) CKKS.
+4.3 Homomorphic EdDSA Signing
+In [BK25], their main application is homomorphic signing, which provides one-round
+threshold/blind signatures for signature schemes like EdDSA [BDL+12]. They propose
+13To estimate the impact, one can roughly choose64/20 = 3.2 times larger log2(∆) , leading to3.2 times
+larger log2(q) and N, and the runtime roughly becomes3.22 × 96 = 983 seconds.
+
+Jaehyung Kim 21
+a dedicated homomorphic encryption scheme that supports homomorphic modular mul-
+tiplication by an arbitrary prescribed modulus. For EdDSA, a popular choice is using a
+curve 25519, which relies on arithmetic operations modulop = 2255−19. We observe that
+for such a Solinas prime, our homomorphic integer computer can give better performance
+in terms of throughput. We instantiated the homomorphic modular multiplication using
+256 bit extended multiplication, addition, and comparison. Our experimental result shows
+a factor of≈18 better throughput compared to [BK25], as illustrated in Table 11. Our
+approach can be preferable when there are sufficiently many signings in parallel.14
+Table 10:Parameter set for the homomorphic signing experiment. We usedd = 28 to
+instantiatek = 512 bit arithmetic.
+logN logQP (h,˜h) dnum
+16 1470 (192,32) 5
+logqi logpjBase StC Mult LUT EvalExp CtS
+50 43×3 50 50×9 50×8 47×3 50×5
+Table 11:Comparison with [BK25] on modulop = 2255−19 multiplications.
+# slots latency (sec) amortized time (ms)
+[BK25] 32 150 4690
+Ours 16384 4260 260
+5 Conclusion
+In this work, we constructed a homomorphic encryption scheme that supports a wide range
+of standard unsigned integer computations, such as addition, multiplication, comparison,
+and bit shift. The biggest strength of our method is throughput, which shows several
+orders of magnitude better performance than that of TFHE-rs.
+We view our framework as a good baseline for SIMD homomorphic computations in
+general. The existing SIMD FHE schemes primarily support only addition and multiplica-
+tion, often requiring dedicated approaches for general computations. On the other hand,
+the CGGI/DM family has built a rich community on top of the functional/programmable
+bootstrapping paradigm. We believe that our work helps emulate their success in the
+corresponding SIMD FHE world.
+Acknowledgement
+The work was supported by Stanford Graduate Fellowship, NSF, DARPA, and the Simons
+Foundation. Opinions, findings, and conclusions or recommendations expressed in this
+material are those of the authors and do not necessarily reflect the views of DARPA.
+We thank Professor Dan Boneh for helpful comments and suggestions, especially on
+applications and experiments.
+14Note that our method is exact modular reduction, whereas [BK25] provides approximate modular
+reduction. Our method is more compatible with applying other operations afterwards.
+
+22 Efficient Homomorphic Integer Computer from CKKS
+References
+[AJL+12] Gilad Asharov, Abhishek Jain, Adriana López-Alt, Eran Tromer, Vinod
+Vaikuntanathan, and Daniel Wichs. Multiparty computation with low com-
+munication, computation and interaction via threshold FHE. In David
+Pointcheval and Thomas Johansson, editors,Advances in Cryptology – EU-
+ROCRYPT 2012, volume 7237 ofLecture Notes in Computer Science, pages
+483–501, Cambridge, UK, April 15–19, 2012. Springer Berlin Heidelberg,
+Germany.
+[AKP25] Andreea Alexandru, Andrey Kim, and Yuriy Polyakov. General functional
+bootstrapping using CKKS. InCRYPTO. Springer-Verlag, 2025.
+[BCC+22] Youngjin Bae, Jung Hee Cheon, Wonhee Cho, Jaehyung Kim, and Taekyung
+Kim. META-BTS: Bootstrapping precision beyond the limit. In Heng Yin,
+Angelos Stavrou, Cas Cremers, and Elaine Shi, editors,ACM CCS 2022:
+29th Conference on Computer and Communications Security, pages 223–234,
+Los Angeles, CA, USA, November 7–11, 2022. ACM Press.
+[BCK+23] Youngjin Bae, Jung Hee Cheon, Jaehyung Kim, Jai Hyun Park, and Damien
+Stehlé. HERMES: Efficient ring packing using MLWE ciphertexts and ap-
+plication to transciphering. In Helena Handschuh and Anna Lysyanskaya,
+editors, Advances in Cryptology – CRYPTO 2023, Part IV, volume 14084 of
+Lecture Notes in Computer Science, pages 37–69, Santa Barbara, CA, USA,
+August 20–24, 2023. Springer, Cham, Switzerland.
+[BCKS24] Youngjin Bae, Jung Hee Cheon, Jaehyung Kim, and Damien Stehlé. Boot-
+strapping bits with CKKS. In Marc Joye and Gregor Leander, editors,Ad-
+vances in Cryptology – EUROCRYPT 2024, Part II, volume 14652 ofLecture
+Notes in Computer Science, pages 94–123, Zurich, Switzerland, May 26–30,
+2024. Springer, Cham, Switzerland.
+[BDL+12] DanielJ.Bernstein, NielsDuif, TanjaLange, PeterSchwabe, andBo-YinYang.
+High-speed high-security signatures.Journal of Cryptographic Engineering,
+2(2):77–89, September 2012.
+[BGG+18] Dan Boneh, Rosario Gennaro, Steven Goldfeder, Aayush Jain, Sam Kim,
+Peter M. R. Rasmussen, and Amit Sahai. Threshold cryptosystems from
+threshold fully homomorphic encryption. In Hovav Shacham and Alexandra
+Boldyreva, editors,Advances in Cryptology – CRYPTO 2018, Part I, volume
+10991 ofLecture Notes in Computer Science, pages 565–596, Santa Barbara,
+CA, USA, August 19–23, 2018. Springer, Cham, Switzerland.
+[BGGJ20] Christina Boura, Nicolas Gama, Mariya Georgieva, and Dimitar Jetchev.
+Chimera: Combining ring-lwe-based fully homomorphic encryption schemes.
+Journal of Mathematical Cryptology, 14(1):316–338, 2020.
+[BGV12] Zvika Brakerski, Craig Gentry, and Vinod Vaikuntanathan. (Leveled) fully
+homomorphic encryption without bootstrapping. In Shafi Goldwasser, editor,
+ITCS 2012: 3rd Innovations in Theoretical Computer Science, pages 309–
+325, Cambridge, MA, USA, January 8–10, 2012. Association for Computing
+Machinery.
+[BK25] Dan Boneh and Jaehyung Kim. Homomorphic encryption for large integers
+from nested residue number systems. InCRYPTO. Springer-Verlag, 2025.
+
+Jaehyung Kim 23
+[BKSS24] Youngjin Bae, Jaehyung Kim, Damien Stehlé, and Elias Suvanto. Bootstrap-
+ping small integers with CKKS. In Kai-Min Chung and Yu Sasaki, editors,
+Advances in Cryptology – ASIACRYPT 2024, Part I, volume 15484 ofLecture
+Notes in Computer Science, pages 330–360, Kolkata, India, December 9–13,
+2024. Springer, Singapore, Singapore.
+[Bra12] Zvika Brakerski. Fully homomorphic encryption without modulus switching
+from classical GapSVP. In Reihaneh Safavi-Naini and Ran Canetti, editors,
+Advances in Cryptology – CRYPTO 2012, volume 7417 ofLecture Notes in
+Computer Science, pages 868–886, Santa Barbara, CA, USA, August 19–23,
+2012. Springer Berlin Heidelberg, Germany.
+[BTH22] Jean-Philippe Bossuat, Juan Ramón Troncoso-Pastoriza, and Jean-Pierre
+Hubaux. Bootstrapping for approximate homomorphic encryption with negli-
+gible failure-probability by using sparse-secret encapsulation. In Giuseppe
+Ateniese and Daniele Venturi, editors,ACNS 2022: 20th International Con-
+ference on Applied Cryptography and Network Security, volume 13269 of
+Lecture Notes in Computer Science, pages 521–541, Rome, Italy, June 20–23,
+2022. Springer, Cham, Switzerland.
+[CGGI16] Ilaria Chillotti, Nicolas Gama, Mariya Georgieva, and Malika Izabachène.
+Faster fully homomorphic encryption: Bootstrapping in less than 0.1 seconds.
+In Jung Hee Cheon and Tsuyoshi Takagi, editors,Advances in Cryptology
+– ASIACRYPT 2016, Part I, volume 10031 ofLecture Notes in Computer
+Science, pages 3–33, Hanoi, Vietnam, December 4–8, 2016. Springer Berlin
+Heidelberg, Germany.
+[CHK+18] Jung Hee Cheon, Kyoohyung Han, Andrey Kim, Miran Kim, and Yongsoo
+Song. Bootstrapping for approximate homomorphic encryption. In Jes-
+per Buus Nielsen and Vincent Rijmen, editors,Advances in Cryptology –
+EUROCRYPT 2018, Part I, volume 10820 ofLecture Notes in Computer
+Science, pages 360–384, Tel Aviv, Israel, April 29 – May 3, 2018. Springer,
+Cham, Switzerland.
+[CHM+25] Hyunho Cha, Intak Hwang, Seonhong Min, Jinyeong Seo, and Yongsoo
+Song. MatriGear: Accelerating Authenticated Matrix Triple Generation with
+Scalable Prime Fields via Optimized HE Packing . In2025 IEEE Symposium
+on Security and Privacy (SP), pages 2453–2471, Los Alamitos, CA, USA,
+May 2025. IEEE Computer Society.
+[CJP21] Ilaria Chillotti, Marc Joye, and Pascal Paillier. Programmable bootstrapping
+enables efficient homomorphic inference of deep neural networks. In Shlomi
+Dolev, Oded Margalit, Benny Pinkas, and Alexander Schwarzmann, editors,
+Cyber Security Cryptography and Machine Learning, pages 1–19, Cham, 2021.
+Springer International Publishing.
+[CKK16] Jung Hee Cheon, Miran Kim, and Myungsun Kim. Optimized search-and-
+compute circuits and their application to query evaluation on encrypted data.
+IEEE Transactions on Information Forensics and Security, 11(1):188–199,
+2016.
+[CKK20] Jung Hee Cheon, Dongwoo Kim, and Duhyeong Kim. Efficient homomorphic
+comparison methods with optimal complexity. In Shiho Moriai and Huaxiong
+Wang, editors,Advances in Cryptology – ASIACRYPT 2020, Part II, volume
+12492 ofLecture Notes in Computer Science, pages 221–256, Daejeon, South
+Korea, December 7–11, 2020. Springer, Cham, Switzerland.
+
+24 Efficient Homomorphic Integer Computer from CKKS
+[CKKL24] Heewon Chung, Hyojun Kim, Young-Sik Kim, and Yongwoo Lee. Amortized
+large look-up table evaluation with multivariate polynomials for homomorphic
+encryption. Cryptology ePrint Archive, Report 2024/274, 2024.
+[CKKS17] Jung Hee Cheon, Andrey Kim, Miran Kim, and Yong Soo Song. Homomorphic
+encryption for arithmetic of approximate numbers. In Tsuyoshi Takagi and
+Thomas Peyrin, editors,Advances in Cryptology – ASIACRYPT 2017, Part I,
+volume 10624 ofLecture Notes in Computer Science, pages 409–437, Hong
+Kong, China, December 3–7, 2017. Springer, Cham, Switzerland.
+[DM15] Léo Ducas and Daniele Micciancio. FHEW: Bootstrapping homomorphic
+encryption in less than a second. In Elisabeth Oswald and Marc Fischlin,
+editors, Advances in Cryptology – EUROCRYPT 2015, Part I, volume 9056 of
+Lecture Notes in Computer Science, pages 617–640, Sofia, Bulgaria, April 26–
+30, 2015. Springer Berlin Heidelberg, Germany.
+[DMPS24] Nir Drucker, Guy Moshkowich, Tomer Pelleg, and Hayim Shaul. BLEACH:
+Cleaning errors in discrete computations over CKKS.Journal of Cryptology,
+37(1):3, January 2024.
+[FV12] Junfeng Fan and Frederik Vercauteren. Somewhat practical fully homomor-
+phic encryption. Cryptology ePrint Archive, Report 2012/144, 2012.
+[Gen09] Craig Gentry. Fully homomorphic encryption using ideal lattices. In Michael
+Mitzenmacher, editor,41st Annual ACM Symposium on Theory of Computing,
+pages 169–178, Bethesda, MD, USA, May 31 – June 2, 2009. ACM Press.
+[GIKV23] Robin Geelen, Ilia Iliashenko, Jiayi Kang, and Frederik Vercauteren. On
+polynomial functions modulope and faster bootstrapping for homomorphic
+encryption. In Carmit Hazay and Martijn Stam, editors,Advances in Cryp-
+tology – EUROCRYPT 2023, Part III, volume 14006 ofLecture Notes in
+Computer Science, pages 257–286, Lyon, France, April 23–27, 2023. Springer,
+Cham, Switzerland.
+[GV23] Robin Geelen and Frederik Vercauteren. Bootstrapping for BGV and BFV
+revisited. J. Cryptol., 36(2), March 2023.
+[GV25] Robin Geelen and Frederik Vercauteren. Fully homomorphic encryption for
+cyclotomic prime moduli. In Serge Fehr and Pierre-Alain Fouque, editors,
+Advances in Cryptology – EUROCRYPT 2025, Part III, volume 15603 of
+Lecture Notes in Computer Science, pages 366–397, Madrid, Spain, May 4–8,
+2025. Springer, Cham, Switzerland.
+[HS18] Shai Halevi and Victor Shoup. Faster homomorphic linear transformations
+in HElib. In Hovav Shacham and Alexandra Boldyreva, editors,Advances
+in Cryptology – CRYPTO 2018, Part I, volume 10991 ofLecture Notes in
+Computer Science, pages 93–120, Santa Barbara, CA, USA, August 19–23,
+2018. Springer, Cham, Switzerland.
+[HZY+22] Zongsheng Hou, Neng Zhang, Bohan Yang, Hanning Wang, Min Zhu, Shouyi
+Yin, Shaojun Wei, and Leibo Liu. Efficient fhe radix-2 arithmetic operations
+based on redundant encoding.IEEE Transactions on Computer-Aided Design
+of Integrated Circuits and Systems, 41(7):2024–2037, 2022.
+[IZ21] Ilia Iliashenko and Vincent Zucca. Faster homomorphic comparison opera-
+tions for BGV and BFV.Proceedings on Privacy Enhancing Technologies,
+2021(3):246–264, July 2021.
+
+Jaehyung Kim 25
+[KN25] Jaehyung Kim and Taeyeong Noh. Modular reduction in CKKS.IACR
+Communications in Cryptology, 2(2), 2025.
+[KS23] Kamil Kluczniak and Leonard Schild. FDFB: Full domain functional boot-
+strapping towards practical fully homomorphic encryption.IACR Transac-
+tions on Cryptographic Hardware and Embedded Systems, 2023(1):501–537,
+2023.
+[KSS24] Jaehyung Kim, Jinyeong Seo, and Yongsoo Song. Simpler and faster BFV
+bootstrapping for arbitrary plaintext modulus from CKKS. In Bo Luo,
+Xiaojing Liao, Jun Xu, Engin Kirda, and David Lie, editors,ACM CCS
+2024: 31st Conference on Computer and Communications Security, pages
+2535–2546, Salt Lake City, UT, USA, October 14–18, 2024. ACM Press.
+[lat24] Lattigo v6. Online: https://github.com/tuneinsight/lattigo, 2024.
+EPFL-LDS, Tune Insight SA.
+[LLKN22] Eunsang Lee, Joon-Woo Lee, Young-Sik Kim, and Jong-Seon No. Optimiza-
+tion of homomorphic comparison algorithm on RNS-CKKS scheme.IEEE
+Access, 10:26163–26176, 2022.
+[LM21] Baiyu Li and Daniele Micciancio. On the security of homomorphic encryption
+on approximate numbers. In Anne Canteaut and François-Xavier Standaert,
+editors, Advances in Cryptology – EUROCRYPT 2021, Part I, volume 12696
+of Lecture Notes in Computer Science, pages 648–677, Zagreb, Croatia,
+October 17–21, 2021. Springer, Cham, Switzerland.
+[LMSS23] Changmin Lee, Seonhong Min, Jinyeong Seo, and Yongsoo Song. Faster tfhe
+bootstrapping with block binary keys. InProceedings of the 2023 ACM Asia
+Conference on Computer and Communications Security, ASIA CCS ’23, page
+2–13, New York, NY, USA, 2023. Association for Computing Machinery.
+[LW23] Zeyu Liu and Yunhao Wang. Amortized functional bootstrapping in less than
+7 ms, with Õ(1) polynomial multiplications. In Jian Guo and Ron Steinfeld,
+editors, Advances in Cryptology – ASIACRYPT 2023, Part VI, volume 14443
+of Lecture Notes in Computer Science, pages 101–132, Guangzhou, China,
+December 4–8, 2023. Springer, Singapore, Singapore.
+[MHWW24] Shihe Ma, Tairong Huang, Anyu Wang, and Xiaoyun Wang. Accelerating
+BGV bootstrapping for largep using null polynomials overZpe. In Marc Joye
+and Gregor Leander, editors,Advances in Cryptology – EUROCRYPT 2024,
+Part II, volume 14652 ofLecture Notes in Computer Science, pages 403–432,
+Zurich, Switzerland, May 26–30, 2024. Springer, Cham, Switzerland.
+[MS18] Daniele Miccianco and Jessica Sorrell. Ring Packing and Amortized FHEW
+Bootstrapping. In Ioannis Chatzigiannakis, Christos Kaklamanis, Dániel
+Marx, and Donald Sannella, editors,45th International Colloquium on Au-
+tomata, Languages, and Programming (ICALP 2018), volume 107 ofLeib-
+niz International Proceedings in Informatics (LIPIcs), pages 100:1–100:14,
+Dagstuhl, Germany, 2018. Schloss Dagstuhl – Leibniz-Zentrum für Informatik.
+[NHY+25] Chao Niu, Zhicong Huang, Zhaomin Yang, Yi Chen, Liang Kong, Cheng
+Hong, and Tao Wei. XBOOT: Free-XOR gates for CKKS with applications
+to transciphering. Cryptology ePrint Archive, Report 2025/074, 2025.
+
+26 Efficient Homomorphic Integer Computer from CKKS
+[PMH+25] Thales B. Paiva, Gabrielle De Micheli, Syed Mahbub Hafiz, Marcos A. Sim-
+plicio Jr., and Bahattin Yildiz. Faster amortized bootstrapping using the
+incomplete NTT for free. Cryptology ePrint Archive, Paper 2025/696, 2025.
+[QZL+19] Qiao Qin, Neng Zhang, Leibo Liu, Shouyi Yin, and Shaojun Wei. Addition
+circuit optimization using carry-lookahead and simd for homomorphic en-
+cryption. In 2019 IEEE International Conference on Electron Devices and
+Solid-State Circuits (EDSSC), pages 1–3, 2019.
+[TLW+21] Benjamin Hong Meng Tan, Hyung Tae Lee, Huaxiong Wang, Shuqin Ren,
+and Khin Mi Mi Aung. Efficient private comparison queries over encrypted
+databases using fully homomorphic encryption with finite fields. IEEE
+Transactions on Dependable and Secure Computing, 18(6):2861–2874, 2021.
+[XCWF16] Chen Xu, Jingwei Chen, Wenyuan Wu, and Yong Feng. Homomorphically
+encrypted arithmetic operations over the integer ring. In Feng Bao, Liqun
+Chen, Robert H. Deng, and Guojun Wang, editors,Information Security
+Practice and Experience, pages 167–181, Cham, 2016. Springer International
+Publishing.
+[Zam22] Zama. TFHE-rs: A Pure Rust Implementation of the TFHE Scheme for
+Boolean and Integer Arithmetics Over Encrypted Data, 2022. https://
+github.com/zama-ai/tfhe-rs.
+[ZQH+21] Neng Zhang, Qiao Qin, Zongsheng Hou, Bohan Yang, Shouyi Yin, Shaojun
+Wei, and Leibo Liu. Efficient comparison and addition for FHE with weighted
+computational complexity model.IEEE Transactions on Computer-Aided
+Design of Integrated Circuits and Systems, 40(9):1896–1908, 2021.
+[ZYZ+24] Fahong Zhang, Chen Yang, Rui Zong, Xinran Zheng, Jianfei Wang, and
+Yishuo Meng. An efficient and scalable fhe-based pdq scheme: Utilizing fft to
+design a low multiplication depth large-integer comparison algorithm.IEEE
+Transactions on Information Forensics and Security, 19:2258–2272, 2024.
