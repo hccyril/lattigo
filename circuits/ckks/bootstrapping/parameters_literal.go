@@ -192,7 +192,7 @@ type IterationsParameters struct {
 	ReservedPrimeBitSize   int
 }
 
-// MarshalBinary returns a JSON representation of the target ParametersLiteral struct on a slice of bytes.
+// MarshalBinary returns a JSON representation of the the target ParametersLiteral struct on a slice of bytes.
 // See Marshal from the [encoding/json] package.
 func (p ParametersLiteral) MarshalBinary() (data []byte, err error) {
 	return json.Marshal(p)
@@ -529,7 +529,6 @@ func (p ParametersLiteral) BitConsumption(LogSlots int) (logQ int, err error) {
 		ReservedPrimeBitSize = Iterations.ReservedPrimeBitSize
 	}
 
-	/* #nosec G115 -- Mod1Degree, Mod1InvDegree cannot be negative */
 	logQ += 1 + EvalModLogPlaintextScale*(bits.Len64(uint64(Mod1Degree))+DoubleAngle+bits.Len64(uint64(Mod1InvDegree))) + ReservedPrimeBitSize
 
 	return

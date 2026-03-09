@@ -57,7 +57,6 @@ func (eval Evaluator[T]) Evaluate(input interface{}, p interface{}, targetScale 
 		return nil, fmt.Errorf("%d levels < %d log(d) -> cannot evaluate poly", level, depth)
 	}
 
-	/* #nosec G115 -- Degree cannot be negative */
 	logDegree := bits.Len64(uint64(polyVec.Value[0].Degree()))
 	logSplit := bignum.OptimalSplit(logDegree)
 
@@ -130,7 +129,7 @@ func (eval Evaluator[T]) EvaluatePatersonStockmeyerPolynomialVector(poly Paterso
 		for i := 0; i < len(babySteps); i++ {
 
 			// eval is not thread-safe
-			if err = eval.EvaluateGiantStep(i, giantsteps, babySteps, pb); err != nil {
+			if err = eval.EvaluateGianStep(i, giantsteps, babySteps, pb); err != nil {
 				return nil, err
 			}
 		}
@@ -188,9 +187,9 @@ func (eval Evaluator[T]) EvaluateBabyStep(i int, poly PatersonStockmeyerPolynomi
 	return ct, nil
 }
 
-// EvaluateGiantStep evaluates a giant-step of the PatersonStockmeyer polynomial evaluation algorithm, which consists
+// EvaluateGianStep evaluates a giant-step of the PatersonStockmeyer polynomial evaluation algorithm, which consists
 // in combining the baby-steps <[1, T, T^2, ..., T^{n-1}], [ci0, ci1, ci2, ..., ci{n-1}]> together with powers T^{2^k}.
-func (eval Evaluator[T]) EvaluateGiantStep(i int, giantSteps []int, babySteps []*BabyStep, pb PowerBasis) (err error) {
+func (eval Evaluator[T]) EvaluateGianStep(i int, giantSteps []int, babySteps []*BabyStep, pb PowerBasis) (err error) {
 
 	// If we reach the end of the list it means we weren't able to combine
 	// the last two sub-polynomials which necessarily implies that that the
@@ -206,7 +205,6 @@ func (eval Evaluator[T]) EvaluateGiantStep(i int, giantSteps []int, babySteps []
 
 		even, odd := babySteps[i], babySteps[i+1]
 
-		/* #nosec G115 -- Degree cannot be negative */
 		deg := 1 << bits.Len64(uint64(babySteps[i].Degree))
 
 		if err = eval.EvaluateMonomial(even.Value, odd.Value, pb.Value[deg]); err != nil {

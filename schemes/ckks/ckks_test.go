@@ -1,7 +1,6 @@
 package ckks
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -11,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"golang.org/x/crypto/blake2b"
 
 	"github.com/tuneinsight/lattigo/v6/core/rlwe"
 	"github.com/tuneinsight/lattigo/v6/ring"
@@ -149,7 +147,6 @@ func testParameters(tc *TestContext, t *testing.T) {
 func testEncoder(tc *TestContext, t *testing.T) {
 
 	t.Run(name("Encoder/IsBatched=true", tc), func(t *testing.T) {
-		t.Parallel()
 
 		values, plaintext, _ := tc.NewTestVector(-1-1i, 1+1i)
 
@@ -159,7 +156,6 @@ func testEncoder(tc *TestContext, t *testing.T) {
 	logprec := float64(tc.Params.LogDefaultScale()) / 2
 
 	t.Run(name("Encoder/IsBatched=true/DecodePublic/[]float64", tc), func(t *testing.T) {
-		t.Parallel()
 
 		values, plaintext, _ := tc.NewTestVector(-1-1i, 1+1i)
 
@@ -178,7 +174,6 @@ func testEncoder(tc *TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Encoder/IsBatched=true/DecodePublic/[]complex128", tc), func(t *testing.T) {
-		t.Parallel()
 
 		if tc.Params.RingType() == ring.ConjugateInvariant {
 			t.Skip()
@@ -205,7 +200,6 @@ func testEncoder(tc *TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Encoder/IsBatched=true/DecodePublic/[]big.Float", tc), func(t *testing.T) {
-		t.Parallel()
 		values, plaintext, _ := tc.NewTestVector(-1-1i, 1+1i)
 		have := make([]*big.Float, len(values))
 		require.NoError(t, tc.Ecd.DecodePublic(plaintext, have, logprec))
@@ -220,7 +214,6 @@ func testEncoder(tc *TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Encoder/IsBatched=true/DecodePublic/[]bignum.Complex", tc), func(t *testing.T) {
-		t.Parallel()
 		if tc.Params.RingType() == ring.ConjugateInvariant {
 			t.Skip()
 		}
@@ -242,7 +235,6 @@ func testEncoder(tc *TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Encoder/IsBatched=false", tc), func(t *testing.T) {
-		t.Parallel()
 
 		slots := tc.Params.N()
 
@@ -308,7 +300,6 @@ func testEncoder(tc *TestContext, t *testing.T) {
 func testEvaluatorAdd(tc *TestContext, t *testing.T) {
 
 	t.Run(name("Evaluator/AddNew/Ct", tc), func(t *testing.T) {
-		t.Parallel()
 
 		values1, _, ciphertext1 := tc.NewTestVector(-1-1i, 1+1i)
 		values2, _, ciphertext2 := tc.NewTestVector(-1-1i, 1+1i)
@@ -324,7 +315,6 @@ func testEvaluatorAdd(tc *TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Evaluator/Add/Ct", tc), func(t *testing.T) {
-		t.Parallel()
 
 		values1, _, ciphertext1 := tc.NewTestVector(-1-1i, 1+1i)
 		values2, _, ciphertext2 := tc.NewTestVector(-1-1i, 1+1i)
@@ -339,7 +329,6 @@ func testEvaluatorAdd(tc *TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Evaluator/Add/Pt", tc), func(t *testing.T) {
-		t.Parallel()
 
 		values1, _, ciphertext1 := tc.NewTestVector(-1-1i, 1+1i)
 		values2, plaintext2, _ := tc.NewTestVector(-1-1i, 1+1i)
@@ -354,7 +343,6 @@ func testEvaluatorAdd(tc *TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Evaluator/Add/Scalar", tc), func(t *testing.T) {
-		t.Parallel()
 
 		values, _, ciphertext := tc.NewTestVector(-1-1i, 1+1i)
 
@@ -370,7 +358,6 @@ func testEvaluatorAdd(tc *TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Evaluator/Add/Vector", tc), func(t *testing.T) {
-		t.Parallel()
 
 		values1, _, ciphertext := tc.NewTestVector(-1-1i, 1+1i)
 		values2, _, _ := tc.NewTestVector(-1-1i, 1+1i)
@@ -388,7 +375,6 @@ func testEvaluatorAdd(tc *TestContext, t *testing.T) {
 func testEvaluatorSub(tc *TestContext, t *testing.T) {
 
 	t.Run(name("Evaluator/SubNew/Ct", tc), func(t *testing.T) {
-		t.Parallel()
 
 		values1, _, ciphertext1 := tc.NewTestVector(-1-1i, 1+1i)
 		values2, _, ciphertext2 := tc.NewTestVector(-1-1i, 1+1i)
@@ -404,7 +390,6 @@ func testEvaluatorSub(tc *TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Evaluator/Sub/Ct", tc), func(t *testing.T) {
-		t.Parallel()
 
 		values1, _, ciphertext1 := tc.NewTestVector(-1-1i, 1+1i)
 		values2, _, ciphertext2 := tc.NewTestVector(-1-1i, 1+1i)
@@ -419,7 +404,6 @@ func testEvaluatorSub(tc *TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Evaluator/Sub/Pt", tc), func(t *testing.T) {
-		t.Parallel()
 
 		values1, _, ciphertext1 := tc.NewTestVector(-1-1i, 1+1i)
 		values2, plaintext2, ciphertext2 := tc.NewTestVector(-1-1i, 1+1i)
@@ -436,7 +420,6 @@ func testEvaluatorSub(tc *TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Evaluator/Sub/Scalar", tc), func(t *testing.T) {
-		t.Parallel()
 
 		values, _, ciphertext := tc.NewTestVector(-1-1i, 1+1i)
 
@@ -452,7 +435,6 @@ func testEvaluatorSub(tc *TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Evaluator/Sub/Vector", tc), func(t *testing.T) {
-		t.Parallel()
 
 		values1, _, ciphertext := tc.NewTestVector(-1-1i, 1+1i)
 		values2, _, _ := tc.NewTestVector(-1-1i, 1+1i)
@@ -470,7 +452,6 @@ func testEvaluatorSub(tc *TestContext, t *testing.T) {
 func testEvaluatorRescale(tc *TestContext, t *testing.T) {
 
 	t.Run(name("Evaluator/RescaleTo/Single", tc), func(t *testing.T) {
-		t.Parallel()
 
 		if tc.Params.MaxLevel() < 2 {
 			t.Skip("skipping test for params max level < 2")
@@ -492,7 +473,6 @@ func testEvaluatorRescale(tc *TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Evaluator/RescaleTo/Many", tc), func(t *testing.T) {
-		t.Parallel()
 
 		if tc.Params.MaxLevel() < 2 {
 			t.Skip("skipping test for params max level < 2")
@@ -522,7 +502,6 @@ func testEvaluatorRescale(tc *TestContext, t *testing.T) {
 func testEvaluatorMul(tc *TestContext, t *testing.T) {
 
 	t.Run(name("Evaluator/MulNew/Ct/Pt", tc), func(t *testing.T) {
-		t.Parallel()
 
 		values1, plaintext1, ciphertext1 := tc.NewTestVector(-1-1i, 1+1i)
 
@@ -539,7 +518,6 @@ func testEvaluatorMul(tc *TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Evaluator/Mul/Ct/Scalar", tc), func(t *testing.T) {
-		t.Parallel()
 
 		values, _, ciphertext := tc.NewTestVector(-1-1i, 1+1i)
 
@@ -557,7 +535,6 @@ func testEvaluatorMul(tc *TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Evaluator/Mul/Ct/Vector", tc), func(t *testing.T) {
-		t.Parallel()
 
 		values1, _, ciphertext := tc.NewTestVector(-1-1i, 1+1i)
 		values2, _, _ := tc.NewTestVector(-1-1i, 1+1i)
@@ -574,7 +551,6 @@ func testEvaluatorMul(tc *TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Evaluator/Mul/Ct/Pt", tc), func(t *testing.T) {
-		t.Parallel()
 
 		values1, plaintext1, ciphertext1 := tc.NewTestVector(-1-1i, 1+1i)
 
@@ -590,7 +566,6 @@ func testEvaluatorMul(tc *TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Evaluator/Mul/Ct/Ct/Degree0", tc), func(t *testing.T) {
-		t.Parallel()
 
 		values1, plaintext1, _ := tc.NewTestVector(-1-1i, 1+1i)
 		values2, _, ciphertext2 := tc.NewTestVector(-1-1i, 1+1i)
@@ -611,7 +586,6 @@ func testEvaluatorMul(tc *TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Evaluator/MulRelin/Ct/Ct", tc), func(t *testing.T) {
-		t.Parallel()
 
 		// op0 <- op0 * op1
 		values1, _, ciphertext1 := tc.NewTestVector(-1-1i, 1+1i)
@@ -656,7 +630,6 @@ func testEvaluatorMul(tc *TestContext, t *testing.T) {
 func testEvaluatorMulThenAdd(tc *TestContext, t *testing.T) {
 
 	t.Run(name("Evaluator/MulThenAdd/Scalar", tc), func(t *testing.T) {
-		t.Parallel()
 
 		values1, _, ciphertext1 := tc.NewTestVector(-1-1i, 1+1i)
 		values2, _, ciphertext2 := tc.NewTestVector(-1-1i, 1+1i)
@@ -680,7 +653,6 @@ func testEvaluatorMulThenAdd(tc *TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Evaluator/MulThenAdd/Vector", tc), func(t *testing.T) {
-		t.Parallel()
 
 		values1, _, ciphertext1 := tc.NewTestVector(-1-1i, 1+1i)
 		values2, _, ciphertext2 := tc.NewTestVector(-1-1i, 1+1i)
@@ -704,7 +676,6 @@ func testEvaluatorMulThenAdd(tc *TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Evaluator/MulThenAdd/Pt", tc), func(t *testing.T) {
-		t.Parallel()
 
 		values1, plaintext1, ciphertext1 := tc.NewTestVector(-1, 1)
 		values2, _, ciphertext2 := tc.NewTestVector(-1, 1)
@@ -728,7 +699,6 @@ func testEvaluatorMulThenAdd(tc *TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Evaluator/MulRelinThenAdd/Ct", tc), func(t *testing.T) {
-		t.Parallel()
 
 		// opOut = opOut + op1 * op0
 		values1, _, ciphertext1 := tc.NewTestVector(-1-1i, 1+1i)
@@ -775,7 +745,6 @@ func testEvaluatorMulThenAdd(tc *TestContext, t *testing.T) {
 func testBridge(tc *TestContext, t *testing.T) {
 
 	t.Run(name("Bridge", tc), func(t *testing.T) {
-		t.Parallel()
 
 		if tc.Params.RingType() != ring.ConjugateInvariant {
 			t.Skip("only tested for params.RingType() == ring.ConjugateInvariant")
@@ -827,49 +796,6 @@ func testBridge(tc *TestContext, t *testing.T) {
 
 		VerifyTestVectors(tc.Params, tc.Ecd, tc.Dec, values, ciCTHave, tc.Params.LogDefaultScale(), 0, *printPrecisionStats, t)
 	})
-}
-
-// TestCKKSParamsConstSerialization test detects (fails) if the serialization of [Parameters] has changed.
-// If such a modification is intended, this test must be updated and users notified s.t.
-// old serialized parameters can be converted to the new format.
-func TestCKKSParamsConstSerialization(t *testing.T) {
-	const expected = "Bo962QjkASlly6oMAojaEYOIGTh5v0nhzWvu93XgVRk="
-	var err error
-	distribs := []ring.DistributionParameters{rlwe.DefaultXe, rlwe.DefaultXs, ring.Ternary{H: 192}}
-	hash, err := blake2b.New(32, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Test with different CKKS params, including different ringtypes and distributions
-	for _, paramsLit := range testParametersLiteral[:] {
-		for _, ringType := range []ring.Type{ring.Standard, ring.ConjugateInvariant}[:] {
-			for _, distXe := range distribs {
-				for _, distXs := range distribs {
-
-					paramsLit.RingType = ringType
-					paramsLit.Xe = distXe
-					paramsLit.Xs = distXs
-					var params Parameters
-					if params, err = NewParametersFromLiteral(paramsLit); err != nil {
-						t.Fatal(err)
-					}
-					paramsBytes, err := params.MarshalBinary()
-					require.Nil(t, err)
-					hash.Write(paramsBytes)
-					paramsBytes, err = params.MarshalJSON()
-					require.Nil(t, err)
-					hash.Write(paramsBytes)
-				}
-			}
-		}
-	}
-	digest := base64.StdEncoding.EncodeToString(hash.Sum(nil))
-
-	// In case the value expected must be updated, uncomment to print the new expected value:
-	// fmt.Println(digest)
-
-	require.Equal(t, expected, digest)
 }
 
 func name(opname string, tc *TestContext) string {

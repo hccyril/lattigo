@@ -75,7 +75,6 @@ func run(tc *ckks.TestContext, t *testing.T) {
 	polyEval := NewEvaluator(params, tc.Evl)
 
 	t.Run(name("EvaluatePoly/PolySingle/Exp", tc), func(t *testing.T) {
-		t.Parallel()
 
 		if params.MaxLevel() < 3 {
 			t.Skip("skipping test for params max level < 3")
@@ -110,7 +109,6 @@ func run(tc *ckks.TestContext, t *testing.T) {
 	})
 
 	t.Run(name("Polynomial/PolyVector/Exp", tc), func(t *testing.T) {
-		t.Parallel()
 
 		if params.MaxLevel() < 3 {
 			t.Skip("skipping test for params max level < 3")

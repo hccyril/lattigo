@@ -49,7 +49,6 @@ func TestComparisons(t *testing.T) {
 		CmpEval := NewEvaluator(tc.Params, minimaxEvl, polys)
 
 		t.Run(name("Sign", tc), func(t *testing.T) {
-			t.Parallel()
 
 			values, _, ct := tc.NewTestVector(complex(-1, 0), complex(1, 0))
 
@@ -71,7 +70,6 @@ func TestComparisons(t *testing.T) {
 		})
 
 		t.Run(name("Step", tc), func(t *testing.T) {
-			t.Parallel()
 
 			values, _, ct := tc.NewTestVector(complex(-1, 0), complex(1, 0))
 
@@ -97,7 +95,6 @@ func TestComparisons(t *testing.T) {
 		})
 
 		t.Run(name("Max", tc), func(t *testing.T) {
-			t.Parallel()
 
 			values0, _, ct0 := tc.NewTestVector(complex(-0.5, 0), complex(0.5, 0))
 			values1, _, ct1 := tc.NewTestVector(complex(-0.5, 0), complex(0.5, 0))
@@ -125,7 +122,6 @@ func TestComparisons(t *testing.T) {
 		})
 
 		t.Run(name("Min", tc), func(t *testing.T) {
-			t.Parallel()
 
 			values0, _, ct0 := tc.NewTestVector(complex(-0.5, 0), complex(0.5, 0))
 			values1, _, ct1 := tc.NewTestVector(complex(-0.5, 0), complex(0.5, 0))

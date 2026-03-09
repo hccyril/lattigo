@@ -67,7 +67,6 @@ func NewParametersFromLiteral(residualParameters ckks.Parameters, btpLit Paramet
 		}
 
 		// Takes the greatest NthRoot between the residualParameters NthRoot and the bootstrapping NthRoot
-		/* #nosec G115 -- N cannot be negative */
 		NthRoot = utils.Max(uint64(residualParameters.N()<<2), uint64(2<<LogN))
 
 	default:
@@ -78,7 +77,6 @@ func NewParametersFromLiteral(residualParameters ckks.Parameters, btpLit Paramet
 		}
 
 		// Takes the greatest NthRoot between the residualParameters NthRoot and the bootstrapping NthRoot
-		/* #nosec G115 -- N cannot be negative */
 		NthRoot = utils.Max(uint64(residualParameters.N()<<1), uint64(2<<LogN))
 	}
 
@@ -276,7 +274,6 @@ func NewParametersFromLiteral(residualParameters ckks.Parameters, btpLit Paramet
 	for logqi, k := range primesBitLenNew {
 
 		// Creates a new prime generator
-		/* #nosec G115 -- logqi cannot be negative */
 		g := ring.NewNTTFriendlyPrimesGenerator(uint64(logqi), NthRoot)
 
 		// Populates the list with primes that aren't yet in primesHave

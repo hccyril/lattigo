@@ -49,6 +49,24 @@ func NewRingPackingEvaluator(evk *RingPackingEvaluationKey) *RingPackingEvaluato
 	}
 }
 
+// ShallowCopy creates a shallow copy of this struct in which all the read-only data-structures are
+// shared with the receiver and the temporary buffers are reallocated. The receiver and the returned
+// Evaluators can be used concurrently.
+func (eval RingPackingEvaluator) ShallowCopy() *RingPackingEvaluator {
+
+	Evaluators := map[int]*Evaluator{}
+	for i := range eval.Evaluators {
+		Evaluators[i] = eval.Evaluators[i].ShallowCopy()
+	}
+
+	return &RingPackingEvaluator{
+		RingPackingEvaluationKey: eval.RingPackingEvaluationKey,
+		Evaluators:               Evaluators,
+		XPow2NTT:                 eval.XPow2NTT,
+		XInvPow2NTT:              eval.XInvPow2NTT,
+	}
+}
+
 // Extract takes as input a ciphertext encrypting P(X) = c[i] * X^i and returns a map of
 // ciphertexts of degree eval.MinLogN(), each encrypting P(X) = c[i] * X^{0} for i in idx.
 // All non-constant coefficients are zeroed and thus correctness is ensured if this method
@@ -511,8 +529,13 @@ func (eval RingPackingEvaluator) Expand(ct *Ciphertext, logGap int) (cts map[int
 
 	gap := 1 << logGap
 
-	tmp := evalN.pool.GetBuffCt(1, level)
-	defer evalN.pool.RecycleBuffCt(tmp)
+	tmp, err := NewCiphertextAtLevelFromPoly(level, []ring.Poly{evalN.BuffCt.Value[0], evalN.BuffCt.Value[1]})
+
+	// Sanity check, this error should not happen unless the
+	// evaluator's buffer thave been improperly tempered with.
+	if err != nil {
+		panic(err)
+	}
 
 	*tmp.MetaData = *ct.MetaData
 
@@ -520,7 +543,6 @@ func (eval RingPackingEvaluator) Expand(ct *Ciphertext, logGap int) (cts map[int
 
 		n := 1 << i
 
-		/* #nosec G115 -- N and/or n cannot be negative */
 		galEl := uint64(ringQ.N()/n + 1)
 
 		for j := 0; j < n; j += gap {

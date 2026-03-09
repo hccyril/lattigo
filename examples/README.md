@@ -1,19 +1,19 @@
-# Single-party-HE Examples
+# Single Party Examples
 
 ## Applications
 
 Application examples are examples showcasing specific capabilities of the library on scaled-down real world scenarios.
 
-### Binary computations
+### Binary
 
 - `bin_blind_rotations`: an example showcasing the evaluation of the sign function using blind rotations on RLWE ciphertexts.
 
-### Integer computations
+### Integers
 
 - `int_ride_hailing`: an example on privacy preserving ride hailing.
 - `int_vectorized_OLE`: an example on vectorized oblivious linear evaluation using an RLWE trapdoor.
 
-### Real/Complex computations
+### Reals/Complexes
 
 - `reals_bootstrapping`: a series of examples showcasing the capabilities of the bootstrapping for fixed point arithmetic.
   - `basics`: an example showcasing the basic capabilities of the bootstrapping.
@@ -38,11 +38,11 @@ Tutorials are examples showcasing the basic capabilities of the library.
 
 - `reals`: a tutorial on all the basic capabilities of the package `ckks`.
 
-# Multiparty-HE Examples
+# Multi Party Examples
 
- - `int_psi`: an example showcasing the $N\text{-out-of-}N$-threshold scheme in a *private set intersection* scenario.
- - `int_pir`: an example showcasing the $t\text{-out-of-}N$-threshold scheme in a *private information retrieval* scenario.
- - `thresh_eval_key_gen`: an example showcasing the generation of a large set of evaluation-keys in the $t\text{-out-of-}N$-threshold scheme.
+ - `int_pir`: an example showcasing multi-party private information retrieval.
+ - `int_psi`: an example showcasing multi-party private set intersection.
+ - `thresh_eval_key_gen`: an example showcasing multi-party threshold key-generation.
 
 ## Parameters
 

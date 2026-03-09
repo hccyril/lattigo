@@ -235,7 +235,6 @@ func main() {
 			if err != nil {
 				panic(err)
 			}
-			/* #nosec G115 -- i cannot be negative */
 			pi.shamirPk = multiparty.ShamirPublicPoint(i + 1)
 		}
 

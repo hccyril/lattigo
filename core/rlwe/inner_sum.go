@@ -61,7 +61,6 @@ func (eval Evaluator) Trace(ctIn *Ciphertext, logN int, opOut *Ciphertext) (err 
 			gap >>= 1 // We skip the last step that applies phi(5^{-1})
 		}
 
-		/* #nosec G115 -- gap cannot be negative */
 		NInv := new(big.Int).SetUint64(uint64(gap))
 		NInv.ModInverse(NInv, ringQ.ModulusAtLevel[level])
 
@@ -75,8 +74,13 @@ func (eval Evaluator) Trace(ctIn *Ciphertext, logN int, opOut *Ciphertext) (err 
 			opOut.IsNTT = true
 		}
 
-		buff := eval.pool.GetBuffCt(1, level)
-		defer eval.pool.RecycleBuffCt(buff)
+		buff, err := NewCiphertextAtLevelFromPoly(level, []ring.Poly{eval.BuffQP[3].Q, eval.BuffQP[4].Q})
+
+		// Sanity check, this error should not happen unless the
+		// evaluator's buffer has been improperly tempered with.
+		if err != nil {
+			panic(err)
+		}
 
 		buff.IsNTT = true
 
@@ -140,14 +144,26 @@ func GaloisElementsForTrace(params ParameterProvider, logN int) (galEls []uint64
 	return
 }
 
-// PartialTracesSum applies a set of automorphisms on the input ciphertext and sum the results.
-// The automorphisms are of the form phi(i*offset, X), 0 <= i < n, where phi(k, X): X -> X^{5^k}
-// i.e. opOut = \sum_{i = 0}^{n-1} phi(i*offset, ctIn).
-// At the scheme level, this function is used to perform inner sums or efficiently replicate slots.
-func (eval Evaluator) PartialTracesSum(ctIn *Ciphertext, offset, n int, opOut *Ciphertext) (err error) {
-	if n == 0 || offset == 0 {
-		return fmt.Errorf("partialtrace: invalid parameter (n = 0 or batchSize = 0)")
-	}
+// InnerSum applies an optimized inner sum on the Ciphertext (log2(n) + HW(n) rotations with double hoisting).
+// The operation assumes that `ctIn` encrypts Slots/`batchSize` sub-vectors of size `batchSize` and will add them together (in parallel) in groups of `n`.
+// It outputs in opOut a [Ciphertext] for which the "leftmost" sub-vector of each group is equal to the sum of the group.
+//
+// The inner sum is computed in a tree fashion. Example for batchSize=2 & n=4 (garbage slots are marked by 'x'):
+//
+//  1. [{a, b}, {c, d}, {e, f}, {g, h}, {a, b}, {c, d}, {e, f}, {g, h}]
+//
+//  2. [{a, b}, {c, d}, {e, f}, {g, h}, {a, b}, {c, d}, {e, f}, {g, h}]
+//     +
+//     [{c, d}, {e, f}, {g, h}, {x, x}, {c, d}, {e, f}, {g, h}, {x, x}] (rotate batchSize * 2^{0})
+//     =
+//     [{a+c, b+d}, {x, x}, {e+g, f+h}, {x, x}, {a+c, b+d}, {x, x}, {e+g, f+h}, {x, x}]
+//
+//  3. [{a+c, b+d}, {x, x}, {e+g, f+h}, {x, x}, {a+c, b+d}, {x, x}, {e+g, f+h}, {x, x}] (rotate batchSize * 2^{1})
+//     +
+//     [{e+g, f+h}, {x, x}, {x, x}, {x, x}, {e+g, f+h}, {x, x}, {x, x}, {x, x}] =
+//     =
+//     [{a+c+e+g, b+d+f+h}, {x, x}, {x, x}, {x, x}, {a+c+e+g, b+d+f+h}, {x, x}, {x, x}, {x, x}]
+func (eval Evaluator) InnerSum(ctIn *Ciphertext, batchSize, n int, opOut *Ciphertext) (err error) {
 
 	params := eval.GetRLWEParameters()
 
@@ -155,15 +171,19 @@ func (eval Evaluator) PartialTracesSum(ctIn *Ciphertext, offset, n int, opOut *C
 	levelP := params.PCount() - 1
 
 	ringQP := params.RingQP().AtLevel(ctIn.Level(), levelP)
-	poolQP := eval.pool.AtLevel(ctIn.Level(), levelP)
 
 	ringQ := ringQP.RingQ
 
 	opOut.Resize(opOut.Degree(), levelQ)
 	*opOut.MetaData = *ctIn.MetaData
 
-	ctInNTT := eval.pool.GetBuffCt(1, levelQ)
-	defer eval.pool.RecycleBuffCt(ctInNTT)
+	ctInNTT, err := NewCiphertextAtLevelFromPoly(levelQ, eval.BuffCt.Value[:2])
+
+	// Sanity check, this error should not happen unless the
+	// evaluator's buffer thave been improperly tempered with.
+	if err != nil {
+		panic(err)
+	}
 
 	ctInNTT.MetaData = &MetaData{}
 	ctInNTT.IsNTT = true
@@ -183,21 +203,14 @@ func (eval Evaluator) PartialTracesSum(ctIn *Ciphertext, offset, n int, opOut *C
 		}
 	} else {
 
-		buffQP1 := poolQP.GetBuffPolyQP()
-		defer poolQP.RecycleBuffPolyQP(buffQP1)
-		buffQP2 := poolQP.GetBuffPolyQP()
-		defer poolQP.RecycleBuffPolyQP(buffQP2)
+		// BuffQP[0:2] are used by AutomorphismHoistedLazy
 
 		// Accumulator mod QP (i.e. opOut Mod QP)
-		accQP := &Element[ringqp.Poly]{Value: []ringqp.Poly{*buffQP1, *buffQP2}}
+		accQP := &Element[ringqp.Poly]{Value: []ringqp.Poly{eval.BuffQP[2], eval.BuffQP[3]}}
 		accQP.MetaData = ctInNTT.MetaData
 
 		// Buffer mod QP (i.e. to store the result of lazy gadget products)
-		buffQP3 := poolQP.GetBuffPolyQP()
-		defer poolQP.RecycleBuffPolyQP(buffQP3)
-		buffQP4 := poolQP.GetBuffPolyQP()
-		defer poolQP.RecycleBuffPolyQP(buffQP4)
-		cQP := &Element[ringqp.Poly]{Value: []ringqp.Poly{*buffQP3, *buffQP4}}
+		cQP := &Element[ringqp.Poly]{Value: []ringqp.Poly{eval.BuffQP[4], eval.BuffQP[5]}}
 		cQP.MetaData = ctInNTT.MetaData
 
 		// Buffer mod Q (i.e. to store the result of gadget products)
@@ -211,22 +224,19 @@ func (eval Evaluator) PartialTracesSum(ctIn *Ciphertext, offset, n int, opOut *C
 
 		cQ.MetaData = ctInNTT.MetaData
 
-		buffDecompQP := poolQP.GetBuffDecompQP(eval.params, levelQ, levelP)
-		defer eval.pool.RecycleBuffDecompQP(buffDecompQP)
-
 		state := false
 		copy := true
 		// Binary reading of the input n
 		for i, j := 0, n; j > 0; i, j = i+1, j>>1 {
 
 			// Starts by decomposing the input ciphertext
-			eval.DecomposeNTT(levelQ, levelP, levelP+1, ctInNTT.Value[1], true, buffDecompQP)
+			eval.DecomposeNTT(levelQ, levelP, levelP+1, ctInNTT.Value[1], true, eval.BuffDecompQP)
 
 			// If the binary reading scans a 1 (j is odd)
 			if j&1 == 1 {
 
 				k := n - (n & ((2 << i) - 1))
-				k *= offset
+				k *= batchSize
 
 				// If the rotation is not zero
 				if k != 0 {
@@ -235,12 +245,12 @@ func (eval Evaluator) PartialTracesSum(ctIn *Ciphertext, offset, n int, opOut *C
 
 					// opOutQP = opOutQP + Rotate(ctInNTT, k)
 					if copy {
-						if err = eval.AutomorphismHoistedLazy(levelQ, ctInNTT, buffDecompQP, rot, accQP); err != nil {
+						if err = eval.AutomorphismHoistedLazy(levelQ, ctInNTT, eval.BuffDecompQP, rot, accQP); err != nil {
 							return err
 						}
 						copy = false
 					} else {
-						if err = eval.AutomorphismHoistedLazy(levelQ, ctInNTT, buffDecompQP, rot, cQP); err != nil {
+						if err = eval.AutomorphismHoistedLazy(levelQ, ctInNTT, eval.BuffDecompQP, rot, cQP); err != nil {
 							return err
 						}
 						ringQP.Add(accQP.Value[0], cQP.Value[0], accQP.Value[0])
@@ -271,10 +281,10 @@ func (eval Evaluator) PartialTracesSum(ctIn *Ciphertext, offset, n int, opOut *C
 
 			if !state {
 
-				rot := params.GaloisElement((1 << i) * offset)
+				rot := params.GaloisElement((1 << i) * batchSize)
 
 				// ctInNTT = ctInNTT + Rotate(ctInNTT, 2^i)
-				if err = eval.AutomorphismHoisted(levelQ, ctInNTT, buffDecompQP, rot, cQ); err != nil {
+				if err = eval.AutomorphismHoisted(levelQ, ctInNTT, eval.BuffDecompQP, rot, cQ); err != nil {
 					return err
 				}
 				ringQ.Add(ctInNTT.Value[0], cQ.Value[0], ctInNTT.Value[0])
@@ -325,6 +335,11 @@ func (eval Evaluator) InnerFunction(ctIn *Ciphertext, batchSize, n int, f func(a
 	opOut.Resize(opOut.Degree(), levelQ)
 	*opOut.MetaData = *ctIn.MetaData
 
+	P0 := params.RingQ().NewPoly()
+	P1 := params.RingQ().NewPoly()
+	P2 := params.RingQ().NewPoly()
+	P3 := params.RingQ().NewPoly()
+
 	ctInNTT := NewCiphertext(params, 1, levelQ)
 
 	*ctInNTT.MetaData = *ctIn.MetaData
@@ -342,8 +357,7 @@ func (eval Evaluator) InnerFunction(ctIn *Ciphertext, batchSize, n int, f func(a
 	} else {
 
 		// Accumulator mod Q
-		accQ := eval.pool.GetBuffCt(1, levelQ)
-		defer eval.pool.RecycleBuffCt(accQ)
+		accQ, err := NewCiphertextAtLevelFromPoly(levelQ, []ring.Poly{P0, P1})
 		*accQ.MetaData = *ctInNTT.MetaData
 
 		// Sanity check, this error should not happen unless the
@@ -353,8 +367,7 @@ func (eval Evaluator) InnerFunction(ctIn *Ciphertext, batchSize, n int, f func(a
 		}
 
 		// Buffer mod Q
-		cQ := eval.pool.GetBuffCt(1, levelQ)
-		defer eval.pool.RecycleBuffCt(cQ)
+		cQ, err := NewCiphertextAtLevelFromPoly(levelQ, []ring.Poly{P2, P3})
 		*cQ.MetaData = *ctInNTT.MetaData
 
 		// Sanity check, this error should not happen unless the
@@ -473,7 +486,7 @@ func GaloisElementsForInnerSum(params ParameterProvider, batch, n int) (galEls [
 // two consecutive sub-vectors to replicate.
 // This method is faster than Replicate when the number of rotations is large and it uses log2(n) + HW(n) instead of n.
 func (eval Evaluator) Replicate(ctIn *Ciphertext, batchSize, n int, opOut *Ciphertext) (err error) {
-	return eval.PartialTracesSum(ctIn, -batchSize, n, opOut)
+	return eval.InnerSum(ctIn, -batchSize, n, opOut)
 }
 
 // GaloisElementsForReplicate returns the list of Galois elements necessary to perform the

@@ -1,7 +1,6 @@
 package polynomial
 
 import (
-	"fmt"
 	"math/big"
 	"math/bits"
 
@@ -12,7 +11,7 @@ import (
 	"github.com/tuneinsight/lattigo/v6/utils/bignum"
 )
 
-// simEvaluator is a struct used to pre-compute the scaling
+// simEvaluator is a struct used to pre-computed the scaling
 // factors of the polynomial coefficients used by the inlined
 // polynomial evaluation by running the polynomial evaluation
 // with dummy operands.
@@ -24,11 +23,6 @@ type simEvaluator struct {
 
 // PolynomialDepth returns the depth of the polynomial.
 func (d simEvaluator) PolynomialDepth(degree int) int {
-
-	if degree <= 0 {
-		panic(fmt.Errorf("invalid degree: degree=%d should be greater than zero", degree))
-	}
-
 	return d.levelsConsumedPerRescaling * (bits.Len64(uint64(degree)) - 1)
 }
 

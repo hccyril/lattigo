@@ -143,13 +143,4 @@ func benchEvaluator(tc *TestContext, bpw2 int, b *testing.B) {
 			}
 		})
 	}
-
-	b.Run(testString(params, params.MaxLevelQ(), params.MaxLevelP(), bpw2, "Evaluator/BuffQPPool"), func(b *testing.B) {
-		poolQP := NewPool(params.RingQP())
-		for i := 0; i < b.N; i++ {
-			pol := poolQP.GetBuffPolyQP()
-			poolQP.RecycleBuffPolyQP(pol)
-		}
-
-	})
 }

@@ -32,8 +32,6 @@ type Evaluator struct {
 	xPow2N1 []ring.Poly
 	// [1, x, x^2, x^4, ..., x^N2/2] / (X^N2 +1)
 	xPow2N2 []ring.Poly
-	// [1, x^-1, x^-2, x^-4, ..., x^-N1/2] / (X^N1 +1)
-	xPow2InvN1 []ring.Poly
 	// [1, x^-1, x^-2, x^-4, ..., x^-N2/2] / (X^N2 +1)
 	xPow2InvN2 []ring.Poly
 
@@ -42,8 +40,6 @@ type Evaluator struct {
 	C2SDFTMatrix   dft.Matrix
 
 	SkDebug *rlwe.SecretKey
-
-	pool *rlwe.BufferPool
 }
 
 // NewEvaluator creates a new [Evaluator].
@@ -77,10 +73,9 @@ func NewEvaluator(btpParams Parameters, evk *EvaluationKeys) (eval *Evaluator, e
 
 	if paramsN1.N() != paramsN2.N() {
 		eval.xPow2N1 = rlwe.GenXPow2NTT(paramsN1.RingQ().AtLevel(0), paramsN2.LogN(), false)
-		eval.xPow2InvN1 = rlwe.GenXPow2NTT(paramsN1.RingQ(), paramsN1.LogN(), true)
+		eval.xPow2N2 = rlwe.GenXPow2NTT(paramsN2.RingQ().AtLevel(0), paramsN2.LogN(), false)
+		eval.xPow2InvN2 = rlwe.GenXPow2NTT(paramsN2.RingQ(), paramsN2.LogN(), true)
 	}
-	eval.xPow2N2 = rlwe.GenXPow2NTT(paramsN2.RingQ().AtLevel(0), paramsN2.LogN(), false)
-	eval.xPow2InvN2 = rlwe.GenXPow2NTT(paramsN2.RingQ(), paramsN2.LogN(), true)
 
 	if btpParams.Mod1ParametersLiteral.Mod1Type == mod1.SinContinuous && btpParams.Mod1ParametersLiteral.DoubleAngle != 0 {
 		return nil, fmt.Errorf("cannot use double angle formula for Mod1Type = Sin -> must use Mod1Type = Cos")
@@ -126,8 +121,39 @@ func NewEvaluator(btpParams Parameters, evk *EvaluationKeys) (eval *Evaluator, e
 
 	eval.Mod1Evaluator = mod1.NewEvaluator(eval.Evaluator, polynomial.NewEvaluator(params, eval.Evaluator), eval.Mod1Parameters)
 
-	eval.pool = rlwe.NewPool(eval.BootstrappingParameters.RingQP())
 	return
+}
+
+// ShallowCopy creates a shallow copy of this [Evaluator] in which all the read-only data-structures are
+// shared with the receiver and the temporary buffers are reallocated. The receiver and the returned
+// Evaluator can be used concurrently.
+func (eval Evaluator) ShallowCopy() *Evaluator {
+	heEvaluator := eval.Evaluator.ShallowCopy()
+
+	paramsN1 := eval.ResidualParameters
+
+	var DomainSwitcher ckks.DomainSwitcher
+	if paramsN1.RingType() == ring.ConjugateInvariant {
+		var err error
+		if DomainSwitcher, err = ckks.NewDomainSwitcher(eval.Parameters.BootstrappingParameters, eval.EvkCmplxToReal, eval.EvkRealToCmplx); err != nil {
+			panic(fmt.Errorf("cannot NewBootstrapper: ckks.NewDomainSwitcher: %w", err))
+		}
+	}
+	return &Evaluator{
+		Parameters:     eval.Parameters,
+		EvaluationKeys: eval.EvaluationKeys,
+		Mod1Parameters: eval.Mod1Parameters,
+		S2CDFTMatrix:   eval.S2CDFTMatrix,
+		C2SDFTMatrix:   eval.C2SDFTMatrix,
+		Evaluator:      heEvaluator,
+		xPow2N1:        eval.xPow2N1,
+		xPow2N2:        eval.xPow2N2,
+		xPow2InvN2:     eval.xPow2InvN2,
+		DomainSwitcher: DomainSwitcher,
+		DFTEvaluator:   dft.NewEvaluator(paramsN1, heEvaluator),
+		Mod1Evaluator:  mod1.NewEvaluator(heEvaluator, polynomial.NewEvaluator(paramsN1, heEvaluator), eval.Mod1Parameters),
+		SkDebug:        eval.SkDebug,
+	}
 }
 
 // CheckKeys checks if all the necessary keys are present in the instantiated [Evaluator]
@@ -225,7 +251,7 @@ func (eval Evaluator) Bootstrap(ct *rlwe.Ciphertext) (*rlwe.Ciphertext, error) {
 	return &cts[0], nil
 }
 
-// BootstrapMany bootstraps a list of ciphertexts and returns the list of bootstrapped ciphertexts.
+// BootstrapMany bootstraps a list of ciphertext and returns the list of bootstrapped ciphertexts.
 func (eval Evaluator) BootstrapMany(cts []rlwe.Ciphertext) ([]rlwe.Ciphertext, error) {
 
 	var err error
@@ -257,12 +283,13 @@ func (eval Evaluator) BootstrapMany(cts []rlwe.Ciphertext) ([]rlwe.Ciphertext, e
 
 	default:
 
-		ctsPacked, ctxt1, ctxt2, err := eval.PackAndSwitchN1ToN2(cts)
-		if err != nil {
+		LogSlots := cts[0].LogSlots()
+		nbCiphertexts := len(cts)
+
+		if cts, err = eval.PackAndSwitchN1ToN2(cts); err != nil {
 			return nil, fmt.Errorf("cannot BootstrapMany: %w", err)
 		}
 
-		cts = ctsPacked
 		for i := range cts {
 			var ct *rlwe.Ciphertext
 			if ct, err = eval.Evaluate(&cts[i]); err != nil {
@@ -271,7 +298,7 @@ func (eval Evaluator) BootstrapMany(cts []rlwe.Ciphertext) ([]rlwe.Ciphertext, e
 			cts[i] = *ct
 		}
 
-		if cts, err = eval.UnpackAndSwitchN2ToN1(cts, ctxt1, ctxt2); err != nil {
+		if cts, err = eval.UnpackAndSwitchN2Tn1(cts, LogSlots, nbCiphertexts); err != nil {
 			return nil, fmt.Errorf("cannot BootstrapMany: %w", err)
 		}
 	}
@@ -637,7 +664,6 @@ func (eval Evaluator) ModUp(ctIn *rlwe.Ciphertext) (ctOut *rlwe.Ciphertext, err 
 	levelQ := params.QCount() - 1
 	levelP := params.PCount() - 1
 
-	poolQP := eval.pool.AtLevel(levelQ, levelP)
 	ringQ = ringQ.AtLevel(levelQ)
 
 	Q := ringQ.ModuliChain()
@@ -670,9 +696,6 @@ func (eval Evaluator) ModUp(ctIn *rlwe.Ciphertext) (ctOut *rlwe.Ciphertext, err 
 
 		ks := eval.Evaluator.Evaluator
 
-		buffDecompQP := poolQP.GetBuffDecompQP(eval.ResidualParameters.Parameters, eval.BootstrappingParameters.MaxLevelQ(), 0)
-		defer eval.pool.RecycleBuffDecompQP(buffDecompQP)
-
 		// ModUp q->QP for ctIn[1] centered around q
 		for j := 0; j < N; j++ {
 
@@ -685,22 +708,22 @@ func (eval Evaluator) ModUp(ctIn *rlwe.Ciphertext) (ctOut *rlwe.Ciphertext, err 
 
 			for i := 0; i < levelQ+1; i++ {
 				tmp = ring.BRedAdd(coeff, Q[i], BRCQ[i])
-				buffDecompQP[0].Q.Coeffs[i][j] = tmp*pos + (Q[i]-tmp)*neg
+				ks.BuffDecompQP[0].Q.Coeffs[i][j] = tmp*pos + (Q[i]-tmp)*neg
 
 			}
 
 			for i := 0; i < levelP+1; i++ {
 				tmp = ring.BRedAdd(coeff, P[i], BRCP[i])
-				buffDecompQP[0].P.Coeffs[i][j] = tmp*pos + (P[i]-tmp)*neg
+				ks.BuffDecompQP[0].P.Coeffs[i][j] = tmp*pos + (P[i]-tmp)*neg
 			}
 		}
 
-		for i := len(buffDecompQP) - 1; i >= 0; i-- {
-			ringQ.NTT(buffDecompQP[0].Q, buffDecompQP[i].Q)
+		for i := len(ks.BuffDecompQP) - 1; i >= 0; i-- {
+			ringQ.NTT(ks.BuffDecompQP[0].Q, ks.BuffDecompQP[i].Q)
 		}
 
-		for i := len(buffDecompQP) - 1; i >= 0; i-- {
-			ringP.NTT(buffDecompQP[0].P, buffDecompQP[i].P)
+		for i := len(ks.BuffDecompQP) - 1; i >= 0; i-- {
+			ringP.NTT(ks.BuffDecompQP[0].P, ks.BuffDecompQP[i].P)
 		}
 
 		ringQ.NTT(ctIn.Value[0], ctIn.Value[0])
@@ -710,12 +733,12 @@ func (eval Evaluator) ModUp(ctIn *rlwe.Ciphertext) (ctOut *rlwe.Ciphertext, err 
 
 			scalar := uint64(math.Round(scale))
 
-			for i := len(buffDecompQP) - 1; i >= 0; i-- {
-				ringQ.MulScalar(buffDecompQP[0].Q, scalar, buffDecompQP[i].Q)
+			for i := len(ks.BuffDecompQP) - 1; i >= 0; i-- {
+				ringQ.MulScalar(ks.BuffDecompQP[0].Q, scalar, ks.BuffDecompQP[i].Q)
 			}
 
-			for i := len(buffDecompQP) - 1; i >= 0; i-- {
-				ringP.MulScalar(buffDecompQP[0].P, scalar, buffDecompQP[i].P)
+			for i := len(ks.BuffDecompQP) - 1; i >= 0; i-- {
+				ringP.MulScalar(ks.BuffDecompQP[0].P, scalar, ks.BuffDecompQP[i].P)
 			}
 
 			ringQ.MulScalar(ctIn.Value[0], scalar, ctIn.Value[0])
@@ -723,15 +746,12 @@ func (eval Evaluator) ModUp(ctIn *rlwe.Ciphertext) (ctOut *rlwe.Ciphertext, err 
 			ctIn.Scale = ctIn.Scale.Mul(rlwe.NewScale(scale))
 		}
 
-		buffQ1 := poolQP.GetBuffPoly()
-		defer poolQP.RecycleBuffPoly(buffQ1)
-
 		ctTmp := &rlwe.Ciphertext{}
-		ctTmp.Value = []ring.Poly{*buffQ1, ctIn.Value[1]}
+		ctTmp.Value = []ring.Poly{ks.BuffQP[1].Q, ctIn.Value[1]}
 		ctTmp.MetaData = ctIn.MetaData
 
 		// Switch back to the dense key
-		ks.GadgetProductHoisted(levelQ, buffDecompQP, &eval.EvkSparseToDense.GadgetCiphertext, ctTmp)
+		ks.GadgetProductHoisted(levelQ, ks.BuffDecompQP, &eval.EvkSparseToDense.GadgetCiphertext, ctTmp)
 		ringQ.Add(ctIn.Value[0], ctTmp.Value[0], ctIn.Value[0])
 
 	} else {
@@ -800,7 +820,7 @@ func (eval Evaluator) SlotsToCoeffs(ctReal, ctImag *rlwe.Ciphertext) (ctOut *rlw
 	return eval.DFTEvaluator.SlotsToCoeffsNew(ctReal, ctImag, eval.S2CDFTMatrix)
 }
 
-func (eval Evaluator) switchRingDegreeN1ToN2New(ctN1 *rlwe.Ciphertext) (ctN2 *rlwe.Ciphertext) {
+func (eval Evaluator) SwitchRingDegreeN1ToN2New(ctN1 *rlwe.Ciphertext) (ctN2 *rlwe.Ciphertext) {
 	ctN2 = ckks.NewCiphertext(eval.BootstrappingParameters, 1, ctN1.Level())
 
 	// Sanity check, this error should never happen unless this algorithm has been improperly
@@ -811,7 +831,7 @@ func (eval Evaluator) switchRingDegreeN1ToN2New(ctN1 *rlwe.Ciphertext) (ctN2 *rl
 	return
 }
 
-func (eval Evaluator) switchRingDegreeN2ToN1New(ctN2 *rlwe.Ciphertext) (ctN1 *rlwe.Ciphertext) {
+func (eval Evaluator) SwitchRingDegreeN2ToN1New(ctN2 *rlwe.Ciphertext) (ctN1 *rlwe.Ciphertext) {
 	ctN1 = ckks.NewCiphertext(eval.ResidualParameters, 1, ctN2.Level())
 
 	// Sanity check, this error should never happen unless this algorithm has been improperly
@@ -844,135 +864,79 @@ func (eval Evaluator) RealToComplexNew(ctReal *rlwe.Ciphertext) (ctCmplx *rlwe.C
 	return
 }
 
-// packingContext contains the parameters used when packing (with Pack())
-type packingContext struct {
-	Params           *ckks.Parameters // Parameters of the ring we are packing to or unpacking from
-	LogMaxDimensions ring.Dimensions  // maximum dimension of a packed ciphertext (logMaxDimensions <= params.LogMaxDimensions())
-	LogSlots         int              // number of slots in a ct before packing (resp. after unpacking)
-	NbPackedCTs      int              // number of cts to be packed (resp. to be unpacked into)
-}
-
-// PackAndSwitchN1ToN2 packs the ciphertexts into N1 and switch to N2 if N1 < N2
-// then it packs the ciphertexts into N2.
-func (eval Evaluator) PackAndSwitchN1ToN2(cts []rlwe.Ciphertext) ([]rlwe.Ciphertext, *packingContext, *packingContext, error) {
+func (eval Evaluator) PackAndSwitchN1ToN2(cts []rlwe.Ciphertext) ([]rlwe.Ciphertext, error) {
 
 	var err error
-	var packN1, packN2 *packingContext
 
-	// If N1 < N2, we pack ciphertexts into N1 and then switch to N2
 	if eval.ResidualParameters.N() != eval.BootstrappingParameters.N() {
-
-		packN1 = &packingContext{&eval.ResidualParameters, eval.ResidualParameters.LogMaxDimensions(), cts[0].LogSlots(), len(cts)}
-
-		// If the bootstrapping max slots are smaller than the max slots of N1, we only pack up to the former
-		if eval.Parameters.LogMaxSlots() < eval.ResidualParameters.LogMaxSlots() {
-			packN1.LogMaxDimensions = eval.Parameters.LogMaxDimensions()
-		}
-		if cts, err = eval.pack(cts, *packN1, eval.xPow2N1); err != nil {
-			return nil, nil, nil, fmt.Errorf("cannot PackAndSwitchN1ToN2: PackN1: %w", err)
+		if cts, err = eval.Pack(cts, eval.ResidualParameters, eval.xPow2N1); err != nil {
+			return nil, fmt.Errorf("cannot PackAndSwitchN1ToN2: PackN1: %w", err)
 		}
 
 		for i := range cts {
-			cts[i] = *eval.switchRingDegreeN1ToN2New(&cts[i])
+			cts[i] = *eval.SwitchRingDegreeN1ToN2New(&cts[i])
 		}
 	}
 
-	// Packing ciphertexts into N2 (up to eval.Parameters.LogMaxDimensions())
-	packN2 = &packingContext{&eval.BootstrappingParameters, eval.Parameters.LogMaxDimensions(), cts[0].LogSlots(), len(cts)}
-
-	if cts, err = eval.pack(cts, *packN2, eval.xPow2N2); err != nil {
-		return nil, nil, nil, fmt.Errorf("cannot PackAndSwitchN1ToN2: PackN1: %w", err)
+	if cts, err = eval.Pack(cts, eval.BootstrappingParameters, eval.xPow2N2); err != nil {
+		return nil, fmt.Errorf("cannot PackAndSwitchN1ToN2: PackN2: %w", err)
 	}
 
-	return cts, packN1, packN2, nil
+	return cts, nil
 }
 
-// UnpackAndSwitchN2ToN1 unpacks the ciphertexts into N2 and, if N1 < N2, it switches the ciphertexts
-// to N1 and unpacks further into N1
-func (eval Evaluator) UnpackAndSwitchN2ToN1(cts []rlwe.Ciphertext, ctxtN1, ctxtN2 *packingContext) ([]rlwe.Ciphertext, error) {
+func (eval Evaluator) UnpackAndSwitchN2Tn1(cts []rlwe.Ciphertext, LogSlots, Nb int) ([]rlwe.Ciphertext, error) {
 
-	var ctsOut []rlwe.Ciphertext
+	var err error
 
-	logSlots := ctxtN2.LogSlots
-
-	// Unpack ciphertexts in N2
-	for i := range cts {
-		ctsUnpack, err := eval.unpack(&cts[i], *ctxtN2, eval.xPow2InvN2)
-
-		if err != nil {
+	if eval.ResidualParameters.N() != eval.BootstrappingParameters.N() {
+		if cts, err = eval.UnPack(cts, eval.BootstrappingParameters, LogSlots, Nb, eval.xPow2InvN2); err != nil {
 			return nil, fmt.Errorf("cannot UnpackAndSwitchN2Tn1: UnpackN2: %w", err)
 		}
 
-		ctsOut = append(ctsOut, ctsUnpack...)
-		ctxtN2.NbPackedCTs -= len(ctsUnpack)
-	}
-
-	// If N1 != N2 (i.e. ctxtN1 != nil): 1) switch cts to N1 2) unpack the cts in N1
-	if ctxtN1 != nil {
-		var ctsN1 []rlwe.Ciphertext
-		logSlots = ctxtN1.LogSlots
-
-		for i := range ctsOut {
-			ctsOut[i] = *eval.switchRingDegreeN2ToN1New(&ctsOut[i])
+		for i := range cts {
+			cts[i] = *eval.SwitchRingDegreeN2ToN1New(&cts[i])
 		}
-
-		for i := range ctsOut {
-			ctsUnpack, err := eval.unpack(&ctsOut[i], *ctxtN1, eval.xPow2InvN1)
-			if err != nil {
-				return nil, fmt.Errorf("cannot UnpackAndSwitchN2Tn1: UnpackN1: %w", err)
-			}
-
-			ctsN1 = append(ctsN1, ctsUnpack...)
-			ctxtN1.NbPackedCTs -= len(ctsUnpack)
-		}
-
-		ctsOut = ctsN1
 	}
 
-	// Set back the dimension of cts to its original value
-	for i := range ctsOut {
-		ctsOut[i].LogDimensions.Cols = logSlots
+	for i := range cts {
+		cts[i].LogDimensions.Cols = LogSlots
 	}
 
-	return ctsOut, nil
+	return cts, nil
 }
 
-// unpack unpacks one sparse ciphertext of (log) dimension ctxt.logMaxDimensions
-// into ctxt.NbPackedCTs ciphertexts of (log) dimension {0, ctxt.LogSlots}
-func (eval Evaluator) unpack(ct *rlwe.Ciphertext, ctxt packingContext, xPow2Inv []ring.Poly) ([]rlwe.Ciphertext, error) {
-	logPackCTs := ctxt.LogMaxDimensions.Cols - ctxt.LogSlots // log of number of CTs that can be packed in one ct
+func (eval Evaluator) UnPack(cts []rlwe.Ciphertext, params ckks.Parameters, LogSlots, Nb int, xPow2Inv []ring.Poly) ([]rlwe.Ciphertext, error) {
+	LogGap := params.LogMaxSlots() - LogSlots
 
-	cts := []rlwe.Ciphertext{*ct}
-	if logPackCTs == 0 {
+	if LogGap == 0 {
 		return cts, nil
 	}
 
-	n := utils.Min(ctxt.NbPackedCTs, 1<<logPackCTs) // #cts to unpack from ct
-	cts = append(cts, make([]rlwe.Ciphertext, n-1)...)
+	cts = append(cts, make([]rlwe.Ciphertext, Nb-1)...)
 
 	for i := 1; i < len(cts); i++ {
-		cts[i] = *ct.CopyNew()
+		cts[i] = *cts[0].CopyNew()
 	}
 
-	r := ctxt.Params.RingQ().AtLevel(cts[0].Level())
+	r := params.RingQ().AtLevel(cts[0].Level())
 
-	logGap := (ctxt.Params.LogMaxSlots() - ctxt.LogSlots) - 1 // log gap of CTs with params.N (minus one)
+	N := len(cts)
 
-	/* #nosec G115 -- n-1 cannot be negative */
-	for i := 0; i < utils.Min(bits.Len64(uint64(n-1)), logPackCTs); i++ {
+	for i := 0; i < utils.Min(bits.Len64(uint64(N-1)), LogGap); i++ {
 
 		step := 1 << (i + 1)
 
-		for j := 0; j < n; j += step {
+		for j := 0; j < N; j += step {
 
 			for k := step >> 1; k < step; k++ {
 
-				if (j + k) >= n {
+				if (j + k) >= N {
 					break
 				}
 
-				r.MulCoeffsMontgomery(cts[j+k].Value[0], xPow2Inv[logGap-i], cts[j+k].Value[0])
-				r.MulCoeffsMontgomery(cts[j+k].Value[1], xPow2Inv[logGap-i], cts[j+k].Value[1])
+				r.MulCoeffsMontgomery(cts[j+k].Value[0], xPow2Inv[i], cts[j+k].Value[0])
+				r.MulCoeffsMontgomery(cts[j+k].Value[1], xPow2Inv[i], cts[j+k].Value[1])
 			}
 		}
 	}
@@ -980,36 +944,28 @@ func (eval Evaluator) unpack(ct *rlwe.Ciphertext, ctxt packingContext, xPow2Inv 
 	return cts, nil
 }
 
-// pack packs ctxt.NbPackedCTs sparse ciphertexts of (log) dimension {0, ctxt.LogSlots}
-// into one ciphertext of (log) dimension ctxt.logMaxDimensions
-func (eval Evaluator) pack(cts []rlwe.Ciphertext, ctxt packingContext, xPow2 []ring.Poly) ([]rlwe.Ciphertext, error) {
+func (eval Evaluator) Pack(cts []rlwe.Ciphertext, params ckks.Parameters, xPow2 []ring.Poly) ([]rlwe.Ciphertext, error) {
 
-	var logSlots = ctxt.LogSlots
-	var logMaxSlots = ctxt.LogMaxDimensions.Cols
-	ringDegree := ctxt.Params.N()
-
-	if logSlots > logMaxSlots {
-		return nil, fmt.Errorf("cannot Pack: cts[0].LogSlots()=%d > logMaxSlots=%d", logSlots, logMaxSlots)
-	}
+	var LogSlots = cts[0].LogSlots()
+	RingDegree := params.N()
 
 	for i, ct := range cts {
-		if s := ct.LogSlots(); s != logSlots {
-			return nil, fmt.Errorf("cannot Pack: cts[%d].PlaintextLogSlots()=%d != cts[0].PlaintextLogSlots=%d", i, s, logSlots)
+		if N := ct.LogSlots(); N != LogSlots {
+			return nil, fmt.Errorf("cannot Pack: cts[%d].PlaintextLogSlots()=%d != cts[0].PlaintextLogSlots=%d", i, N, LogSlots)
 		}
 
-		if N := ct.Value[0].N(); N != ringDegree {
-			return nil, fmt.Errorf("cannot Pack: cts[%d].Value[0].N()=%d != params.N()=%d", i, N, ringDegree)
+		if N := ct.Value[0].N(); N != RingDegree {
+			return nil, fmt.Errorf("cannot Pack: cts[%d].Value[0].N()=%d != params.N()=%d", i, N, RingDegree)
 		}
 	}
 
-	logPackCTs := logMaxSlots - logSlots // log of number of CTs that can be packed in one ct
-	logGap := (ctxt.Params.LogMaxSlots() - logSlots - 1)
+	LogGap := params.LogMaxSlots() - LogSlots
 
-	if logPackCTs == 0 {
+	if LogGap == 0 {
 		return cts, nil
 	}
 
-	for i := 0; i < logPackCTs; i++ {
+	for i := 0; i < LogGap; i++ {
 
 		for j := 0; j < len(cts)>>1; j++ {
 
@@ -1018,10 +974,10 @@ func (eval Evaluator) pack(cts []rlwe.Ciphertext, ctxt packingContext, xPow2 []r
 
 			level := utils.Min(eve.Level(), odd.Level())
 
-			r := ctxt.Params.RingQ().AtLevel(level)
+			r := params.RingQ().AtLevel(level)
 
-			r.MulCoeffsMontgomeryThenAdd(odd.Value[0], xPow2[logGap-i], eve.Value[0])
-			r.MulCoeffsMontgomeryThenAdd(odd.Value[1], xPow2[logGap-i], eve.Value[1])
+			r.MulCoeffsMontgomeryThenAdd(odd.Value[0], xPow2[i], eve.Value[0])
+			r.MulCoeffsMontgomeryThenAdd(odd.Value[1], xPow2[i], eve.Value[1])
 
 			cts[j] = eve
 		}
@@ -1034,8 +990,9 @@ func (eval Evaluator) pack(cts []rlwe.Ciphertext, ctxt packingContext, xPow2 []r
 		}
 	}
 
+	LogMaxDimensions := params.LogMaxDimensions()
 	for i := range cts {
-		cts[i].LogDimensions = ctxt.LogMaxDimensions
+		cts[i].LogDimensions = LogMaxDimensions
 	}
 
 	return cts, nil

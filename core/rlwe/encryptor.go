@@ -46,6 +46,7 @@ func NewEncryptor(params ParameterProvider, key EncryptionKey) *Encryptor {
 
 type Encryptor struct {
 	params Parameters
+	*encryptorBuffers
 
 	encKey         EncryptionKey
 	prng           sampling.PRNG
@@ -53,7 +54,6 @@ type Encryptor struct {
 	xsSampler      ring.Sampler
 	basisextender  *ring.BasisExtender
 	uniformSampler ringqp.UniformSampler
-	pool           *BufferPool
 }
 
 // GetRLWEParameters returns the underlying [Parameters].
@@ -65,7 +65,8 @@ func newEncryptor(params Parameters) *Encryptor {
 
 	prng, err := sampling.NewPRNG()
 	if err != nil {
-		panic(fmt.Errorf("newEncryptor: %w", err))
+		// Sanity check, this error should not happen.
+		panic(err)
 	}
 
 	var bc *ring.BasisExtender
@@ -88,38 +89,28 @@ func newEncryptor(params Parameters) *Encryptor {
 	}
 
 	return &Encryptor{
-		params:         params,
-		prng:           prng,
-		xeSampler:      xeSampler,
-		xsSampler:      xsSampler,
-		uniformSampler: ringqp.NewUniformSampler(prng, *params.RingQP()),
-		basisextender:  bc,
-		pool:           NewPool(params.RingQP()),
+		params:           params,
+		prng:             prng,
+		xeSampler:        xeSampler,
+		xsSampler:        xsSampler,
+		encryptorBuffers: newEncryptorBuffers(params),
+		uniformSampler:   ringqp.NewUniformSampler(prng, *params.RingQP()),
+		basisextender:    bc,
 	}
 }
 
-// newTestEncryptorWithKeyedPRNG creates a new [Encryptor] that uses the provided prng for randomness.
-// CAUTION: THIS FUNCTION SHOULD BE USED FOR TESTING PURPOSES ONLY.
-// WARNING: The resulting encryptor is not meant to be used concurrently.
-func newTestEncryptorWithKeyedPRNG(params ParameterProvider, key EncryptionKey, prng *sampling.KeyedPRNG) *Encryptor {
-	p := *params.GetRLWEParameters()
+type encryptorBuffers struct {
+	buffQP [3]ringqp.Poly
+}
 
-	enc := NewEncryptor(params, key)
-	xeSampler, err := ring.NewSampler(prng, p.RingQ(), p.Xe(), false)
-	if err != nil {
-		panic(fmt.Errorf("NewEncryptorWithPRNG: cannot create xeSampler %w", err))
+func newEncryptorBuffers(params Parameters) *encryptorBuffers {
+	return &encryptorBuffers{
+		buffQP: [3]ringqp.Poly{
+			params.RingQP().NewPoly(),
+			params.RingQP().NewPoly(),
+			params.RingQP().NewPoly(),
+		},
 	}
-	xsSampler, err := ring.NewSampler(prng, p.RingQ(), p.Xs(), false)
-	if err != nil {
-		panic(fmt.Errorf("NewEncryptorWithPRNG: cannot create xsSampler %w", err))
-	}
-	uniformSampler := ringqp.NewUniformSampler(prng, *p.RingQP())
-	enc.prng = prng
-	enc.xeSampler = xeSampler
-	enc.xsSampler = xsSampler
-	enc.uniformSampler = uniformSampler
-
-	return enc
 }
 
 // Encrypt encrypts the input plaintext using the stored encryption key and writes the result on ct.
@@ -215,11 +206,9 @@ func (enc Encryptor) encryptZeroPk(pk *PublicKey, ct interface{}) (err error) {
 
 		levelQ = ct.Level()
 		levelP = 0
-		buffQP := enc.pool.GetBuffPolyQP()
-		defer enc.pool.RecycleBuffPolyQP(buffQP)
 
-		ct0QP = ringqp.Poly{Q: ct.Value[0], P: buffQP.Q}
-		ct1QP = ringqp.Poly{Q: ct.Value[1], P: buffQP.P}
+		ct0QP = ringqp.Poly{Q: ct.Value[0], P: enc.buffQP[0].Q}
+		ct1QP = ringqp.Poly{Q: ct.Value[1], P: enc.buffQP[0].P}
 	case Element[ringqp.Poly]:
 
 		levelQ = ct.LevelQ()
@@ -233,10 +222,7 @@ func (enc Encryptor) encryptZeroPk(pk *PublicKey, ct interface{}) (err error) {
 
 	ringQP := enc.params.RingQP().AtLevel(levelQ, levelP)
 
-	buffU := enc.pool.GetBuffPolyQP()
-	defer enc.pool.RecycleBuffPolyQP(buffU)
-
-	u := *buffU
+	u := enc.buffQP[1]
 
 	// We sample a RLWE instance (encryption of zero) over the extended ring (ciphertext ring + special prime)
 	enc.xsSampler.AtLevel(levelQ).Read(u.Q)
@@ -304,24 +290,23 @@ func (enc Encryptor) encryptZeroPkNoP(pk *PublicKey, ct Element[ring.Poly]) (err
 
 	ringQ := enc.params.RingQ().AtLevel(levelQ)
 
-	buffQ0 := enc.pool.GetBuffPoly()
-	defer enc.pool.RecycleBuffPoly(buffQ0)
+	buffQ0 := enc.buffQP[0].Q
 
-	enc.xsSampler.AtLevel(levelQ).Read(*buffQ0)
-	ringQ.NTT(*buffQ0, *buffQ0)
+	enc.xsSampler.AtLevel(levelQ).Read(buffQ0)
+	ringQ.NTT(buffQ0, buffQ0)
 
 	c0, c1 := ct.Value[0], ct.Value[1]
 
 	// ct0 = NTT(u*pk0)
-	ringQ.MulCoeffsMontgomery(*buffQ0, pk.Value[0].Q, c0)
+	ringQ.MulCoeffsMontgomery(buffQ0, pk.Value[0].Q, c0)
 	// ct1 = NTT(u*pk1)
-	ringQ.MulCoeffsMontgomery(*buffQ0, pk.Value[1].Q, c1)
+	ringQ.MulCoeffsMontgomery(buffQ0, pk.Value[1].Q, c1)
 
 	// c0
 	if ct.IsNTT {
-		enc.xeSampler.AtLevel(levelQ).Read(*buffQ0)
-		ringQ.NTT(*buffQ0, *buffQ0)
-		ringQ.Add(c0, *buffQ0, c0)
+		enc.xeSampler.AtLevel(levelQ).Read(buffQ0)
+		ringQ.NTT(buffQ0, buffQ0)
+		ringQ.Add(c0, buffQ0, c0)
 	} else {
 		ringQ.INTT(c0, c0)
 		enc.xeSampler.AtLevel(levelQ).ReadAndAdd(c0)
@@ -329,9 +314,9 @@ func (enc Encryptor) encryptZeroPkNoP(pk *PublicKey, ct Element[ring.Poly]) (err
 
 	// c1
 	if ct.IsNTT {
-		enc.xeSampler.AtLevel(levelQ).Read(*buffQ0)
-		ringQ.NTT(*buffQ0, *buffQ0)
-		ringQ.Add(c1, *buffQ0, c1)
+		enc.xeSampler.AtLevel(levelQ).Read(buffQ0)
+		ringQ.NTT(buffQ0, buffQ0)
+		ringQ.Add(c1, buffQ0, c1)
 
 	} else {
 		ringQ.INTT(c1, c1)
@@ -353,9 +338,7 @@ func (enc Encryptor) encryptZeroSk(sk *SecretKey, ct interface{}) (err error) {
 		if ct.Degree() == 1 {
 			c1 = ct.Value[1]
 		} else {
-			buffPolyQ := enc.pool.BufferPool.AtLevel(ct.Level()).GetBuffPoly()
-			defer enc.pool.RecycleBuffPoly(buffPolyQ)
-			c1 = *buffPolyQ
+			c1 = enc.buffQP[1].Q
 		}
 
 		enc.uniformSampler.AtLevel(ct.Level(), -1).Read(ringqp.Poly{Q: c1})
@@ -364,48 +347,71 @@ func (enc Encryptor) encryptZeroSk(sk *SecretKey, ct interface{}) (err error) {
 			enc.params.RingQ().AtLevel(ct.Level()).NTT(c1, c1)
 		}
 
-		return enc.encryptZeroSkFromC1(sk, ct.Element, c1, ct.Value[0])
+		return enc.encryptZeroSkFromC1(sk, ct.Element, c1)
 
 	case Element[ringqp.Poly]:
 
 		var c1 ringqp.Poly
-		levelQ, levelP := ct.LevelQ(), ct.LevelP()
 
 		if ct.Degree() == 1 {
 			c1 = ct.Value[1]
 		} else {
-			buffPolyQP := enc.pool.AtLevel(levelQ, levelP).GetBuffPolyQP()
-			defer enc.pool.RecycleBuffPolyQP(buffPolyQP)
-			c1 = *buffPolyQP
+			c1 = enc.buffQP[1]
 		}
 
 		// ct = (e, a)
-		enc.uniformSampler.AtLevel(levelQ, levelP).Read(c1)
+		enc.uniformSampler.AtLevel(ct.LevelQ(), ct.LevelP()).Read(c1)
 
 		if !ct.IsNTT {
-			enc.params.RingQP().AtLevel(levelQ, levelP).NTT(c1, c1)
+			enc.params.RingQP().AtLevel(ct.LevelQ(), ct.LevelP()).NTT(c1, c1)
 		}
 
-		return enc.encryptZeroSkFromC1QP(sk, levelQ, levelP, &ct.CiphertextMetaData, c1, ct.Value[0])
+		return enc.encryptZeroSkFromC1QP(sk, ct, c1)
 	default:
 		return fmt.Errorf("cannot EncryptZero: input ciphertext type %T is not supported", ct)
 	}
 }
 
-// encryptZeroSkFromC1 computes c0 := c1 * sk + noise according to the ciphertext metadata
-func (enc Encryptor) encryptZeroSkFromC1(sk *SecretKey, ct Element[ring.Poly], c1, c0 ring.Poly) (err error) {
+func (enc Encryptor) encryptZeroSkFromC1(sk *SecretKey, ct Element[ring.Poly], c1 ring.Poly) (err error) {
 
-	levelQ := ct.LevelQ()
-	c1QP := ringqp.Poly{Q: c1}
-	c0QP := ringqp.Poly{Q: c0}
+	levelQ := ct.Level()
 
-	return enc.encryptZeroSkFromC1QP(sk, levelQ, -1, &ct.CiphertextMetaData, c1QP, c0QP)
+	ringQ := enc.params.RingQ().AtLevel(levelQ)
+
+	c0 := ct.Value[0]
+
+	ringQ.MulCoeffsMontgomery(c1, sk.Value.Q, c0)
+	ringQ.Neg(c0, c0)
+
+	if ct.IsNTT {
+		e := enc.buffQP[0].Q
+		enc.xeSampler.AtLevel(levelQ).Read(e)
+		ringQ.NTT(e, e)
+		ringQ.Add(c0, e, c0)
+	} else {
+		ringQ.INTT(c0, c0)
+		if ct.Degree() == 1 {
+			ringQ.INTT(c1, c1)
+		}
+
+		enc.xeSampler.AtLevel(levelQ).ReadAndAdd(c0)
+	}
+
+	return
 }
 
-// encryptZeroSkFromC1QP computes c0 := c1 * sk + noise according to the provided levels and ciphertext metadata
-func (enc Encryptor) encryptZeroSkFromC1QP(sk *SecretKey, levelQ, levelP int, ctMetaData *CiphertextMetaData, c1, c0 ringqp.Poly) (err error) {
+// EncryptZeroSeeded generates en encryption of zero under sk.
+// levelQ : level of the modulus Q
+// levelP : level of the modulus P
+// sk     : secret key
+// sampler: uniform sampler; if `sampler` is nil, then the internal sampler will be used.
+// montgomery: returns the result in the Montgomery domain.
+func (enc Encryptor) encryptZeroSkFromC1QP(sk *SecretKey, ct Element[ringqp.Poly], c1 ringqp.Poly) (err error) {
 
+	levelQ, levelP := ct.LevelQ(), ct.LevelP()
 	ringQP := enc.params.RingQP().AtLevel(levelQ, levelP)
+
+	c0 := ct.Value[0]
 
 	// ct = (e, 0)
 	enc.xeSampler.AtLevel(levelQ).Read(c0.Q)
@@ -414,17 +420,15 @@ func (enc Encryptor) encryptZeroSkFromC1QP(sk *SecretKey, levelQ, levelP int, ct
 	}
 
 	ringQP.NTT(c0, c0)
-
-	// sk is in Montgomery form by default and c1 can be interpreted as being in the Montgomery domain or not (it is uniformly generated).
-	// Hence, the domain of the noise e determines whether c0 = c1*sk + e is in the Montgomery form or not.
-	if ctMetaData.IsMontgomery {
-		ringQP.MForm(c0, c0)
-	}
+	// ct[1] is assumed to be sampled in of the Montgomery domain,
+	// thus -as will also be in the Montgomery domain (s is by default), therefore 'e'
+	// must be switched to the Montgomery domain.
+	ringQP.MForm(c0, c0)
 
 	// (-a*sk + e, a)
 	ringQP.MulCoeffsMontgomeryThenSub(c1, sk.Value, c0)
 
-	if !ctMetaData.IsNTT {
+	if !ct.IsNTT {
 		ringQP.INTT(c0, c0)
 		ringQP.INTT(c1, c1)
 	}
@@ -432,12 +436,16 @@ func (enc Encryptor) encryptZeroSkFromC1QP(sk *SecretKey, levelQ, levelP int, ct
 	return
 }
 
-// withKeyedUniformSampling returns this encryptor with a keyed prng as its source of randomness for the uniform
+// WithPRNG returns this encryptor with prng as its source of randomness for the uniform
 // element c1.
-// The returned encryptor is not thread safe (sampling will not be deterministic).
-func (enc Encryptor) withKeyedUniformSampling(prng *sampling.KeyedPRNG) *Encryptor {
+// The returned encryptor isn't safe to use concurrently with the original encryptor.
+func (enc Encryptor) WithPRNG(prng sampling.PRNG) *Encryptor {
 	enc.uniformSampler = ringqp.NewUniformSampler(prng, *enc.params.RingQP())
 	return &enc
+}
+
+func (enc Encryptor) ShallowCopy() *Encryptor {
+	return NewEncryptor(enc.params, enc.encKey)
 }
 
 func (enc Encryptor) WithKey(key EncryptionKey) *Encryptor {
@@ -481,22 +489,17 @@ func (enc Encryptor) checkSk(sk *SecretKey) (err error) {
 func (enc Encryptor) addPtToCt(level int, pt *Plaintext, ct *Ciphertext) {
 
 	ringQ := enc.params.RingQ().AtLevel(level)
-	poolQ := enc.pool.AtLevel(level)
 	var buff ring.Poly
 	if pt.IsNTT {
 		if ct.IsNTT {
 			buff = pt.Value
 		} else {
-			buffQ := poolQ.GetBuffPoly()
-			defer poolQ.RecycleBuffPoly(buffQ)
-			buff = *buffQ
+			buff = enc.buffQP[0].Q
 			ringQ.NTT(pt.Value, buff)
 		}
 	} else {
 		if ct.IsNTT {
-			buffQ := poolQ.GetBuffPoly()
-			defer poolQ.RecycleBuffPoly(buffQ)
-			buff = *buffQ
+			buff = enc.buffQP[0].Q
 			ringQ.INTT(pt.Value, buff)
 		} else {
 			buff = pt.Value

@@ -25,9 +25,9 @@ const (
 // the Q and P fields to the desired moduli chain, or by setting the LogQ and LogP fields to
 // the desired moduli sizes.
 //
-// Users must also specify the coefficient modulus in plaintext-space (T).
-// If slot encoding is used (default), the number of slots available in the plaintext will be equal to the largest n s.t. T = 1 mod 2n.
-// Otherwise, if coefficient encoding is used, the maximal number of slots available is equal to N.
+// Users must also specify the coefficient modulus in plaintext-space (T). This modulus must
+// be an NTT-friendly prime in the plaintext space: it must be equal to 1 modulo 2n where
+// n is the plaintext ring degree (i.e., the plaintext space has n slots).
 //
 // Optionally, users may specify the error variance (Sigma) and secrets' density (H). If left
 // unset, standard default values for these field are substituted at parameter creation (see
@@ -97,13 +97,11 @@ func NewParameters(rlweParams rlwe.Parameters, t uint64) (p Parameters, err erro
 
 	var ringQMul *ring.Ring
 	nbQiMul := int(math.Ceil(float64(rlweParams.RingQ().ModulusAtLevel[rlweParams.MaxLevel()].BitLen()+rlweParams.LogN()) / 61.0))
-	/* #nosec G115 -- NthRoot cannot be negative */
 	g := ring.NewNTTFriendlyPrimesGenerator(61, uint64(rlweParams.NthRoot()))
 	primes, err := g.NextDownstreamPrimes(nbQiMul)
 	if err != nil {
 		return Parameters{}, err
 	}
-
 	if ringQMul, err = ring.NewRing(rlweParams.N(), primes); err != nil {
 		return Parameters{}, err
 	}
@@ -118,9 +116,7 @@ func NewParameters(rlweParams rlwe.Parameters, t uint64) (p Parameters, err erro
 	}
 
 	var ringT *ring.Ring
-	/* #nosec G115 -- library requires 64-bit system -> int = int64 */
-	dimRingT := utils.Min(rlweParams.N(), int(order>>1))
-	if ringT, err = ring.NewRing(dimRingT, []uint64{t}); err != nil {
+	if ringT, err = ring.NewRing(utils.Min(rlweParams.N(), int(order>>1)), []uint64{t}); err != nil {
 		return Parameters{}, fmt.Errorf("provided plaintext modulus t is invalid: %w", err)
 	}
 
@@ -261,7 +257,7 @@ func (p Parameters) GaloisElementForRowRotation() uint64 {
 // InnerSum operation with parameters batch and n.
 func (p Parameters) GaloisElementsForInnerSum(batch, n int) (galEls []uint64) {
 	galEls = rlwe.GaloisElementsForInnerSum(p, batch, n)
-	if n*batch > p.MaxSlots()>>1 {
+	if n > p.N()>>1 {
 		galEls = append(galEls, p.GaloisElementForRowRotation())
 	}
 	return

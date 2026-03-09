@@ -18,8 +18,10 @@ import (
 type EncToShareProtocol struct {
 	multiparty.KeySwitchProtocol
 
-	params ckks.Parameters
-	zero   *rlwe.SecretKey
+	params     ckks.Parameters
+	zero       *rlwe.SecretKey
+	maskBigint []*big.Int
+	buff       ring.Poly
 }
 
 func NewAdditiveShare(params ckks.Parameters, logSlots int) multiparty.AdditiveShareBigint {
@@ -30,6 +32,25 @@ func NewAdditiveShare(params ckks.Parameters, logSlots int) multiparty.AdditiveS
 	}
 
 	return multiparty.NewAdditiveShareBigint(nValues)
+}
+
+// ShallowCopy creates a shallow copy of [EncToShareProtocol] in which all the read-only data-structures are
+// shared with the receiver and the temporary buffers are reallocated. The receiver and the returned
+// [EncToShareProtocol] can be used concurrently.
+func (e2s EncToShareProtocol) ShallowCopy() EncToShareProtocol {
+
+	maskBigint := make([]*big.Int, len(e2s.maskBigint))
+	for i := range maskBigint {
+		maskBigint[i] = new(big.Int)
+	}
+
+	return EncToShareProtocol{
+		KeySwitchProtocol: e2s.KeySwitchProtocol.ShallowCopy(),
+		params:            e2s.params,
+		zero:              e2s.zero,
+		maskBigint:        maskBigint,
+		buff:              e2s.params.RingQ().NewPoly(),
+	}
 }
 
 // NewEncToShareProtocol creates a new EncToShareProtocol struct from the passed parameters.
@@ -43,6 +64,11 @@ func NewEncToShareProtocol(params ckks.Parameters, noise ring.DistributionParame
 
 	e2s.params = params
 	e2s.zero = rlwe.NewSecretKey(params.Parameters)
+	e2s.maskBigint = make([]*big.Int, params.N())
+	for i := range e2s.maskBigint {
+		e2s.maskBigint[i] = new(big.Int)
+	}
+	e2s.buff = e2s.params.RingQ().NewPoly()
 	return e2s, nil
 }
 
@@ -91,16 +117,15 @@ func (e2s EncToShareProtocol) GenShare(sk *rlwe.SecretKey, logBound uint, ct *rl
 		dslots *= 2
 	}
 
-	maskBigint := make([]*big.Int, dslots)
 	// Generate the mask in Z[Y] for Y = X^{N/(2*slots)}
 	for i := 0; i < dslots; i++ {
-		maskBigint[i] = bignum.RandInt(prng, bound)
-		sign = maskBigint[i].Cmp(boundHalf)
+		e2s.maskBigint[i] = bignum.RandInt(prng, bound)
+		sign = e2s.maskBigint[i].Cmp(boundHalf)
 		if sign == 1 || sign == 0 {
-			maskBigint[i].Sub(maskBigint[i], bound)
+			e2s.maskBigint[i].Sub(e2s.maskBigint[i], bound)
 		}
 
-		secretShareOut.Value[i].Set(maskBigint[i])
+		secretShareOut.Value[i].Set(e2s.maskBigint[i])
 	}
 
 	// Encrypt the mask
@@ -108,12 +133,11 @@ func (e2s EncToShareProtocol) GenShare(sk *rlwe.SecretKey, logBound uint, ct *rl
 	e2s.KeySwitchProtocol.GenShare(sk, e2s.zero, ct, publicShareOut)
 
 	// Positional -> RNS -> NTT
-	buffQ := ringQ.NewPoly()
-	ringQ.SetCoefficientsBigint(secretShareOut.Value[:dslots], buffQ)
-	rlwe.NTTSparseAndMontgomery(ringQ, ct.MetaData, buffQ)
+	ringQ.SetCoefficientsBigint(secretShareOut.Value[:dslots], e2s.buff)
+	rlwe.NTTSparseAndMontgomery(ringQ, ct.MetaData, e2s.buff)
 
 	// Subtracts the mask to the encryption of zero
-	ringQ.Sub(publicShareOut.Value, buffQ, publicShareOut.Value)
+	ringQ.Sub(publicShareOut.Value, e2s.buff, publicShareOut.Value)
 
 	return
 }
@@ -129,12 +153,11 @@ func (e2s EncToShareProtocol) GetShare(secretShare *multiparty.AdditiveShareBigi
 
 	ringQ := e2s.params.RingQ().AtLevel(levelQ)
 
-	buffQ := ringQ.NewPoly()
 	// Adds the decryption share on the ciphertext and stores the result in a buff
-	ringQ.Add(aggregatePublicShare.Value, ct.Value[0], buffQ)
+	ringQ.Add(aggregatePublicShare.Value, ct.Value[0], e2s.buff)
 
 	// INTT -> RNS -> Positional
-	ringQ.INTT(buffQ, buffQ)
+	ringQ.INTT(e2s.buff, e2s.buff)
 
 	dslots := ct.Slots()
 	if ringQ.Type() == ring.Standard {
@@ -143,23 +166,19 @@ func (e2s EncToShareProtocol) GetShare(secretShare *multiparty.AdditiveShareBigi
 
 	gap := ringQ.N() / dslots
 
-	maskBigint := make([]*big.Int, ringQ.N())
-	for i := range maskBigint {
-		maskBigint[i] = new(big.Int)
-	}
-	ringQ.PolyToBigintCentered(buffQ, gap, maskBigint)
+	ringQ.PolyToBigintCentered(e2s.buff, gap, e2s.maskBigint)
 
 	// Subtracts the last mask
 	if secretShare != nil {
 		a := secretShareOut.Value
-		b := maskBigint
+		b := e2s.maskBigint
 		c := secretShare.Value
 		for i := range secretShareOut.Value[:dslots] {
 			a[i].Add(c[i], b[i])
 		}
 	} else {
 		a := secretShareOut.Value
-		b := maskBigint
+		b := e2s.maskBigint
 		for i := range secretShareOut.Value[:dslots] {
 			a[i].Set(b[i])
 		}
@@ -170,8 +189,23 @@ func (e2s EncToShareProtocol) GetShare(secretShare *multiparty.AdditiveShareBigi
 // required by the shares-to-encryption protocol.
 type ShareToEncProtocol struct {
 	multiparty.KeySwitchProtocol
-	params ckks.Parameters
-	zero   *rlwe.SecretKey
+	params   ckks.Parameters
+	tmp      ring.Poly
+	ssBigint []*big.Int
+	zero     *rlwe.SecretKey
+}
+
+// ShallowCopy creates a shallow copy of [ShareToEncProtocol] in which all the read-only data-structures are
+// shared with the receiver and the temporary buffers are reallocated. The receiver and the returned
+// [ShareToEncProtocol] can be used concurrently.
+func (s2e ShareToEncProtocol) ShallowCopy() ShareToEncProtocol {
+	return ShareToEncProtocol{
+		KeySwitchProtocol: s2e.KeySwitchProtocol.ShallowCopy(),
+		params:            s2e.params,
+		tmp:               s2e.params.RingQ().NewPoly(),
+		ssBigint:          make([]*big.Int, s2e.params.N()),
+		zero:              s2e.zero,
+	}
 }
 
 // NewShareToEncProtocol creates a new ShareToEncProtocol struct from the passed parameters.
@@ -184,6 +218,8 @@ func NewShareToEncProtocol(params ckks.Parameters, noise ring.DistributionParame
 	}
 
 	s2e.params = params
+	s2e.tmp = s2e.params.RingQ().NewPoly()
+	s2e.ssBigint = make([]*big.Int, s2e.params.N())
 	s2e.zero = rlwe.NewSecretKey(params.Parameters)
 	return s2e, nil
 }
@@ -215,13 +251,12 @@ func (s2e ShareToEncProtocol) GenShare(sk *rlwe.SecretKey, crs multiparty.KeySwi
 		dslots *= 2
 	}
 
-	buffQ := ringQ.NewPoly()
 	// Positional -> RNS -> NTT
-	ringQ.SetCoefficientsBigint(secretShare.Value[:dslots], buffQ)
+	ringQ.SetCoefficientsBigint(secretShare.Value[:dslots], s2e.tmp)
 
-	rlwe.NTTSparseAndMontgomery(ringQ, metadata, buffQ)
+	rlwe.NTTSparseAndMontgomery(ringQ, metadata, s2e.tmp)
 
-	ringQ.Add(c0ShareOut.Value, buffQ, c0ShareOut.Value)
+	ringQ.Add(c0ShareOut.Value, s2e.tmp, c0ShareOut.Value)
 
 	return
 }

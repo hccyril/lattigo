@@ -15,7 +15,7 @@ import (
 
 const (
 	// GaloisGen is an integer of order N/2 modulo M that spans Z_M with the integer -1.
-	// The j-th ring automorphism takes the root zeta to zeta^(5^j).
+	// The j-th ring automorphism takes the root zeta to zeta^(5j).
 	GaloisGen uint64 = 5
 
 	// MinimumRingDegreeForLoopUnrolledOperations is the minimum ring degree required to
@@ -78,7 +78,6 @@ type Ring struct {
 	RescaleConstants [][]uint64
 
 	level int
-	pool  *BufferPool
 }
 
 // ConjugateInvariantRing returns the conjugate invariant ring of the receiver ring.
@@ -101,15 +100,12 @@ func (r Ring) ConjugateInvariantRing() (*Ring, error) {
 
 	for i, s := range r.SubRings {
 
-		/* #nosec G115 -- library requires 64-bit system -> int = int64 */
 		if cr.SubRings[i], err = NewSubRingWithCustomNTT(s.N>>1, s.Modulus, NewNumberTheoreticTransformerConjugateInvariant, int(s.NthRoot)); err != nil {
 			return nil, err
 		}
 
 		factors[i] = s.Factors // Allocates factor for faster generation
 	}
-
-	cr.pool = NewPool(&cr)
 
 	return &cr, cr.generateNTTConstants(nil, factors)
 }
@@ -134,15 +130,12 @@ func (r Ring) StandardRing() (*Ring, error) {
 
 	for i, s := range r.SubRings {
 
-		/* #nosec G115 -- library requires 64-bit system -> int = int64 */
 		if sr.SubRings[i], err = NewSubRingWithCustomNTT(s.N<<1, s.Modulus, NewNumberTheoreticTransformerStandard, int(s.NthRoot)); err != nil {
 			return nil, err
 		}
 
 		factors[i] = s.Factors // Allocates factor for faster generation
 	}
-
-	sr.pool = NewPool(&sr)
 
 	return &sr, sr.generateNTTConstants(nil, factors)
 }
@@ -154,7 +147,6 @@ func (r Ring) N() int {
 
 // LogN returns log2(ring degree).
 func (r Ring) LogN() int {
-	/* #nosec G115 -- N cannot be negative */
 	return bits.Len64(uint64(r.N() - 1))
 }
 
@@ -200,7 +192,6 @@ func (r Ring) AtLevel(level int) *Ring {
 		ModulusAtLevel:   r.ModulusAtLevel,
 		RescaleConstants: r.RescaleConstants,
 		level:            level,
-		pool:             r.pool,
 	}
 }
 
@@ -315,8 +306,6 @@ func NewRingWithCustomNTT(N int, ModuliChain []uint64, ntt func(*SubRing, int) N
 	r.RescaleConstants = rewRescaleConstants(r.SubRings)
 
 	r.level = len(ModuliChain) - 1
-
-	r.pool = NewPool(r)
 
 	return r, r.generateNTTConstants(nil, nil)
 }
@@ -604,8 +593,6 @@ func newRingFromparametersLiteral(p ringParametersLiteral) (r *Ring, err error) 
 	}
 
 	r.RescaleConstants = rewRescaleConstants(r.SubRings)
-
-	r.pool = NewPool(r)
 
 	return
 }

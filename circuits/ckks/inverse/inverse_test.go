@@ -55,7 +55,6 @@ func TestInverse(t *testing.T) {
 		eval := tc.Evl.WithKey(evk)
 
 		t.Run(name("GoldschmidtDivisionNew", tc), func(t *testing.T) {
-			t.Parallel()
 
 			values, _, ciphertext := tc.NewTestVector(complex(min, 0), complex(2-min, 0))
 
@@ -77,9 +76,7 @@ func TestInverse(t *testing.T) {
 		})
 
 		t.Run(name("PositiveDomain", tc), func(t *testing.T) {
-			t.Parallel()
 
-			eval := tc.Evl.WithKey(evk)
 			values, _, ct := tc.NewTestVector(complex(0, 0), complex(max, 0))
 
 			minEvl := minimax.NewEvaluator(tc.Params, eval, btp)
@@ -108,9 +105,7 @@ func TestInverse(t *testing.T) {
 		})
 
 		t.Run(name("NegativeDomain", tc), func(t *testing.T) {
-			t.Parallel()
 
-			eval := tc.Evl.WithKey(evk)
 			values, _, ct := tc.NewTestVector(complex(-max, 0), complex(0, 0))
 
 			minEvl := minimax.NewEvaluator(tc.Params, eval, btp)
@@ -139,7 +134,6 @@ func TestInverse(t *testing.T) {
 		})
 
 		t.Run(name("FullDomain", tc), func(t *testing.T) {
-			t.Parallel()
 
 			values, _, ct := tc.NewTestVector(complex(-max, 0), complex(max, 0))
 

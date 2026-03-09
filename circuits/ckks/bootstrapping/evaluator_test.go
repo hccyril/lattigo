@@ -191,14 +191,17 @@ func testRawCircuit(params ckks.Parameters, btpParams Parameters, level int, t *
 		plaintext.LogDimensions = btpParams.LogMaxDimensions()
 		encoder.Encode(values, plaintext)
 
-		n := 2
+		n := 1
 
 		ciphertexts := make([]*rlwe.Ciphertext, n)
+		evaluators := make([]*Evaluator, n)
+		evaluators[0] = eval
 		ciphertexts[0], err = encryptor.EncryptNew(plaintext)
 		require.NoError(t, err)
 		for i := 1; i < len(ciphertexts); i++ {
 			ciphertexts[i], err = encryptor.EncryptNew(plaintext)
 			require.NoError(t, err)
+			evaluators[i] = evaluators[0].ShallowCopy()
 		}
 
 		var wg sync.WaitGroup
@@ -206,7 +209,7 @@ func testRawCircuit(params ckks.Parameters, btpParams Parameters, level int, t *
 		for i := range ciphertexts {
 			go func(index int) {
 				var err error
-				ciphertexts[index], err = eval.Evaluate(ciphertexts[index])
+				ciphertexts[index], err = evaluators[index].Evaluate(ciphertexts[index])
 				require.NoError(t, err)
 				wg.Done()
 			}(i)

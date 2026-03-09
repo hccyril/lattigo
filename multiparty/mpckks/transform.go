@@ -23,7 +23,28 @@ type MaskedLinearTransformationProtocol struct {
 	defaultScale *big.Int
 	prec         uint
 
+	mask    []*big.Int
 	encoder *ckks.Encoder
+}
+
+// ShallowCopy creates a shallow copy of [MaskedLinearTransformationProtocol] in which all the read-only data-structures are
+// shared with the receiver and the temporary buffers are reallocated. The receiver and the returned
+// [MaskedLinearTransformationProtocol] can be used concurrently.
+func (mltp MaskedLinearTransformationProtocol) ShallowCopy() MaskedLinearTransformationProtocol {
+
+	mask := make([]*big.Int, mltp.e2s.params.N())
+	for i := range mask {
+		mask[i] = new(big.Int)
+	}
+
+	return MaskedLinearTransformationProtocol{
+		e2s:          mltp.e2s.ShallowCopy(),
+		s2e:          mltp.s2e.ShallowCopy(),
+		prec:         mltp.prec,
+		defaultScale: mltp.defaultScale,
+		mask:         mask,
+		encoder:      mltp.encoder.ShallowCopy(),
+	}
 }
 
 // WithParams creates a shallow copy of the target [MaskedLinearTransformationProtocol] but with new output parameters.
@@ -47,10 +68,11 @@ func (mltp MaskedLinearTransformationProtocol) WithParams(paramsOut ckks.Paramet
 	defaultScale, _ := new(big.Float).SetPrec(mltp.prec).Set(&scale).Int(nil)
 
 	return MaskedLinearTransformationProtocol{
-		e2s:          mltp.e2s,
+		e2s:          mltp.e2s.ShallowCopy(),
 		s2e:          s2e,
 		prec:         mltp.prec,
 		defaultScale: defaultScale,
+		mask:         mask,
 		encoder:      ckks.NewEncoder(paramsOut, mltp.prec),
 	}
 }
@@ -95,6 +117,11 @@ func NewMaskedLinearTransformationProtocol(paramsIn, paramsOut ckks.Parameters, 
 	scale := paramsOut.DefaultScale().Value
 
 	mltp.defaultScale, _ = new(big.Float).SetPrec(prec).Set(&scale).Int(nil)
+
+	mltp.mask = make([]*big.Int, paramsIn.N())
+	for i := range mltp.mask {
+		mltp.mask[i] = new(big.Int)
+	}
 
 	mltp.encoder = ckks.NewEncoder(paramsOut, prec)
 
@@ -151,10 +178,7 @@ func (mltp MaskedLinearTransformationProtocol) GenShare(skIn, skOut *rlwe.Secret
 		dslots *= 2
 	}
 
-	mask := make([]*big.Int, dslots)
-	for i := range mask {
-		mask[i] = new(big.Int)
-	}
+	mask := mltp.mask[:dslots]
 
 	// Generates the decryption share
 	// Returns [M_i] on mltp.tmpMask and [a*s_i -M_i + e] on EncToShareShare
@@ -227,10 +251,7 @@ func (mltp MaskedLinearTransformationProtocol) Transform(ct *rlwe.Ciphertext, tr
 		dslots *= 2
 	}
 
-	mask := make([]*big.Int, dslots)
-	for i := range mask {
-		mask[i] = new(big.Int)
-	}
+	mask := mltp.mask[:dslots]
 
 	// Returns -sum(M_i) + x (outside of the NTT domain)
 	mltp.e2s.GetShare(nil, share.EncToShareShare, ct, &multiparty.AdditiveShareBigint{Value: mask})

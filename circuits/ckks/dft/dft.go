@@ -144,7 +144,6 @@ type Evaluator struct {
 	*ckks.Evaluator
 	LTEvaluator *ltcommon.Evaluator
 	parameters  ckks.Parameters
-	pool        *rlwe.BufferPool
 }
 
 // NewEvaluator instantiates a new [Evaluator] from a [ckks.Evaluator].
@@ -153,9 +152,6 @@ func NewEvaluator(params ckks.Parameters, eval *ckks.Evaluator) *Evaluator {
 	dfteval.Evaluator = eval
 	dfteval.LTEvaluator = ltcommon.NewEvaluator(eval)
 	dfteval.parameters = params
-
-	dfteval.pool = rlwe.NewPool(params.RingQP())
-
 	return dfteval
 }
 
@@ -243,7 +239,7 @@ func (eval *Evaluator) CoeffsToSlots(ctIn *rlwe.Ciphertext, ctsMatrices Matrix, 
 
 		zV := ctIn.CopyNew()
 
-		if err = eval.dft(ctIn, ctsMatrices, zV); err != nil {
+		if err = eval.dft(ctIn, ctsMatrices.Matrices, zV); err != nil {
 			return fmt.Errorf("cannot CoeffsToSlots: %w", err)
 		}
 
@@ -255,8 +251,14 @@ func (eval *Evaluator) CoeffsToSlots(ctIn *rlwe.Ciphertext, ctsMatrices Matrix, 
 		if ctImag != nil {
 			tmp = ctImag
 		} else {
-			tmp = eval.pool.GetBuffCt(1, ctReal.Level())
-			defer eval.pool.RecycleBuffCt(tmp)
+			tmp, err = rlwe.NewCiphertextAtLevelFromPoly(ctReal.Level(), eval.GetBuffCt().Value[:2])
+
+			// This error cannot happen unless the user improperly tempered the evaluators
+			// buffer. If it were to happen in that case, there is no way to recover from
+			// it, hence the panic.
+			if err != nil {
+				panic(err)
+			}
 
 			tmp.IsNTT = true
 		}
@@ -289,7 +291,7 @@ func (eval *Evaluator) CoeffsToSlots(ctIn *rlwe.Ciphertext, ctsMatrices Matrix, 
 		zV = nil
 
 	} else {
-		if err = eval.dft(ctIn, ctsMatrices, ctReal); err != nil {
+		if err = eval.dft(ctIn, ctsMatrices.Matrices, ctReal); err != nil {
 			return fmt.Errorf("cannot CoeffsToSlots: %w", err)
 		}
 	}
@@ -327,11 +329,11 @@ func (eval *Evaluator) SlotsToCoeffs(ctReal, ctImag *rlwe.Ciphertext, stcMatrice
 			return fmt.Errorf("cannot SlotsToCoeffs: %w", err)
 		}
 
-		if err = eval.dft(opOut, stcMatrices, opOut); err != nil {
+		if err = eval.dft(opOut, stcMatrices.Matrices, opOut); err != nil {
 			return fmt.Errorf("cannot SlotsToCoeffs: %w", err)
 		}
 	} else {
-		if err = eval.dft(ctReal, stcMatrices, opOut); err != nil {
+		if err = eval.dft(ctReal, stcMatrices.Matrices, opOut); err != nil {
 			return fmt.Errorf("cannot SlotsToCoeffs: %w", err)
 		}
 	}
@@ -339,31 +341,14 @@ func (eval *Evaluator) SlotsToCoeffs(ctReal, ctImag *rlwe.Ciphertext, stcMatrice
 	return
 }
 
-// dft evaluates homorphically the iDFT/DFT [Matrix] on ctIn and stores the result in opOut.
-func (eval *Evaluator) dft(ctIn *rlwe.Ciphertext, mat Matrix, opOut *rlwe.Ciphertext) (err error) {
+// dft evaluates a series of [lintrans.LinearTransformation] sequentially on the ctIn and stores the result in opOut.
+func (eval *Evaluator) dft(ctIn *rlwe.Ciphertext, matrices []ltcommon.LinearTransformation, opOut *rlwe.Ciphertext) (err error) {
 
 	inputLogSlots := ctIn.LogDimensions
 
-	matrixIdx := 0
-
-	for _, lvl := range mat.Levels {
-		for range lvl {
-			if matrixIdx == 0 {
-				if err = eval.LTEvaluator.Evaluate(ctIn, mat.Matrices[matrixIdx], opOut); err != nil {
-					return
-				}
-			} else {
-				if err = eval.LTEvaluator.Evaluate(opOut, mat.Matrices[matrixIdx], opOut); err != nil {
-					return
-				}
-			}
-
-			matrixIdx += 1
-
-		}
-		if err = eval.Rescale(opOut, opOut); err != nil {
-			return
-		}
+	// Sequentially multiplies w with the provided dft matrices.
+	if err = eval.LTEvaluator.EvaluateSequential(ctIn, matrices, opOut); err != nil {
+		return
 	}
 
 	// Encoding matrices are a special case of `fractal` linear transform
