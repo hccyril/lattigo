@@ -114,3 +114,54 @@ Mul已出现错误，跳过执行解密验证第二次乘法的结果
   执行Bootstrapping恢复level...
   Bootstrap错误: cannot BootstrapMany: cannot ApplyEvaluationKey: input and output Ciphertext must be of degree 1
 exit status 234
+
+================================================================================
+问题分析与修复说明
+================================================================================
+
+【问题原因】
+在第[8]部分执行Bootstrapping时失败，错误信息为:
+  "cannot BootstrapMany: cannot ApplyEvaluationKey: input and output Ciphertext must be of degree 1"
+
+根本原因:
+1. 在执行 ctA * ctB 乘法时，调用的是 evaluatorBTP.MulNew()
+2. MulNew() 是"不带重线性化"的乘法
+3. 不带重线性化的乘法会导致密文的多项式度(degree)从1变为2
+   - degree=1的密文: ct = (c0, c1)，包含2个多项式
+   - degree=2的密文: ct = (c0, c1, c2)，包含3个多项式（乘法产生的）
+4. 虽然后续调用了 Rescale() 降低level，但degree仍然是2
+5. Bootstrapping的 ModUp 步骤中，使用了短暂密钥(EphemeralSecretKey)进行密钥切换
+6. ApplyEvaluationKey() 函数要求输入和输出的密文degree都必须是1
+7. 因此当尝试对degree=2的密文ctMul1执行Bootstrap时，触发了错误
+
+CKKS论文中的乘法公式(Algorithm 4: Multiply):
+  给定 ct=(c0,c1) 和 ct'=(c0',c1')，乘法结果为:
+    ct_mult = (d0, d1, d2)
+    其中:
+      d0 = c0*c0'
+      d1 = c0*c1' + c1*c0'
+      d2 = c1*c1'
+  此时degree变为2，需要重线性化来降低degree
+
+【修复方案】
+将 MulNew() 替换为 MulRelinNew()
+
+- MulNew(): 不带重线性化的乘法，degree会变成2
+- MulRelinNew(): 带重线性化的乘法，degree保持为1
+  重线性化将degree=2的密文(ct=(d0,d1,d2))转换为degree=1的密文(ct=(d0',d1'))
+  这是通过使用重线性化密钥(rlk)来实现的
+
+修复位置:
+- main.go 第470行附近: 将 ctMul1, _ := evaluatorBTP.MulNew(ctA, ctB)
+  替换为: ctMul1, _ := evaluatorBTP.MulRelinNew(ctA, ctB)
+
+- main.go 第487行附近: 将 ctMul2, _ := evaluatorBTP.MulNew(ctMul1BTP, ctB)
+  替换为: ctMul2, _ := evaluatorBTP.MulRelinNew(ctMul1BTP, ctB)
+
+【关键概念】
+- degree: 密文多项式的个数。原始密文degree=1，乘法后degree=2
+- relinearization: 重线性化，将degree=2的密文降回degree=1
+- Mul vs MulRelin:
+  - Mul: 不带重线性化，degree会累加
+  - MulRelin: 带重线性化，degree保持不变
+- ApplyEvaluationKey: 密钥切换操作，某些步骤(如ModUp的短暂密钥切换)要求degree=1

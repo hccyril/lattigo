@@ -464,14 +464,16 @@ func main() {
 	fmt.Printf("  密文B: level=%d\n", ctB.Level())
 
 	// 第一次乘法 A*B
-	fmt.Println("\n  第一次乘法: ctA * ctB")
+	// 注意: 必须使用MulRelin进行带重线性化的乘法
+	// 因为MulNew的degree会变成2，而Bootstrap要求输入degree=1
+	fmt.Println("\n  第一次乘法: ctA * ctB (带重线性化)")
 	evaluatorBTP := ckks.NewEvaluator(paramsBTP, btpKeys)
 
-	ctMul1, _ := evaluatorBTP.MulNew(ctA, ctB)
+	ctMul1, _ := evaluatorBTP.MulRelinNew(ctA, ctB)
 	if err := evaluatorBTP.Rescale(ctMul1, ctMul1); err != nil {
 		fmt.Printf("  Rescale警告: %v\n", err)
 	}
-	fmt.Printf("  结果: level=%d\n", ctMul1.Level())
+	fmt.Printf("  结果: level=%d, degree=%d\n", ctMul1.Level(), ctMul1.Degree())
 
 	// 第二次乘法前先Bootstrapping恢复level
 	fmt.Println("\n  执行Bootstrapping恢复level...")
@@ -483,12 +485,13 @@ func main() {
 	fmt.Printf("  Bootstrapping后: level=%d\n", ctMul1BTP.Level())
 
 	// 第二次乘法 (A*B) * B
-	fmt.Println("\n  第二次乘法: (ctA*ctB) * ctB")
-	ctMul2, _ := evaluatorBTP.MulNew(ctMul1BTP, ctB)
+	// 注意: 必须使用MulRelinNew来保持degree=1
+	fmt.Println("\n  第二次乘法: (ctA*ctB) * ctB (带重线性化)")
+	ctMul2, _ := evaluatorBTP.MulRelinNew(ctMul1BTP, ctB)
 	if err := evaluatorBTP.Rescale(ctMul2, ctMul2); err != nil {
 		fmt.Printf("  Rescale警告: %v\n", err)
 	}
-	fmt.Printf("  结果: level=%d\n", ctMul2.Level())
+	fmt.Printf("  结果: level=%d, degree=%d\n", ctMul2.Level(), ctMul2.Degree())
 
 	// 解密验证结果
 	decryptedResult := make([]complex128, PlaintextSize)
@@ -601,7 +604,7 @@ func setupCKKSParameters() (ckks.Parameters, error) {
 func printParameters(params ckks.Parameters) {
 	fmt.Printf("  环多项式次数: N = 2^%d = %d\n", params.LogN(), params.N())
 	fmt.Printf("  密文模数链Q:\n")
-	for i, _ := range params.Q() {
+	for i := range params.Q() {
 		fmt.Printf("    Q[%d] = %d bits (≈ 2^%d)\n", i, params.LogQLvl(i), params.LogQLvl(i))
 	}
 	fmt.Printf("  总模数比特数: %.0f\n", params.LogQP())
