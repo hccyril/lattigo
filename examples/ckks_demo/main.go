@@ -467,10 +467,15 @@ func main() {
 	// 注意: 必须使用MulRelin进行带重线性化的乘法
 	// 因为MulNew的degree会变成2，而Bootstrap要求输入degree=1
 	fmt.Println("\n  第一次乘法: ctA * ctB (带重线性化)")
-	evaluatorBTP := ckks.NewEvaluator(paramsBTP, btpKeys)
 
-	ctMul1, _ := evaluatorBTP.MulRelinNew(ctA, ctB)
-	if err := evaluatorBTP.Rescale(ctMul1, ctMul1); err != nil {
+	// 关键: 使用btpEvaluator的内部评估器
+	// btpEvaluator.BootstrappingParameters包含完整的模数链(levels 0-16)
+	// btpEvaluator.Evaluator是ckks.Evaluator, 它的评估密钥与ctA/ctB兼容
+	// 注意: btpEvaluator.Evaluator使用的参数是BootstrappingParameters
+	// 但它可以正确处理level=1的密文,因为level检查是在密文级别进行的
+
+	ctMul1, _ := btpEvaluator.Evaluator.MulRelinNew(ctA, ctB)
+	if err := btpEvaluator.Evaluator.Rescale(ctMul1, ctMul1); err != nil {
 		fmt.Printf("  Rescale警告: %v\n", err)
 	}
 	fmt.Printf("  结果: level=%d, degree=%d\n", ctMul1.Level(), ctMul1.Degree())
@@ -487,13 +492,14 @@ func main() {
 	// 第二次乘法 (A*B) * B
 	// 注意: 必须使用MulRelinNew来保持degree=1
 	fmt.Println("\n  第二次乘法: (ctA*ctB) * ctB (带重线性化)")
-	ctMul2, _ := evaluatorBTP.MulRelinNew(ctMul1BTP, ctB)
-	if err := evaluatorBTP.Rescale(ctMul2, ctMul2); err != nil {
+	ctMul2, _ := btpEvaluator.Evaluator.MulRelinNew(ctMul1BTP, ctB)
+	if err := btpEvaluator.Evaluator.Rescale(ctMul2, ctMul2); err != nil {
 		fmt.Printf("  Rescale警告: %v\n", err)
 	}
 	fmt.Printf("  结果: level=%d, degree=%d\n", ctMul2.Level(), ctMul2.Degree())
 
 	// 解密验证结果
+	// 注意: 解密器和评估器必须使用相同的参数集
 	decryptedResult := make([]complex128, PlaintextSize)
 	expectedResult := multiplyComplexSlices(multiplyComplexSlices(btpValuesA, btpValuesB), btpValuesB)
 	decryptedPlain := decryptorBTP.DecryptNew(ctMul2)

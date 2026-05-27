@@ -165,3 +165,88 @@ CKKS论文中的乘法公式(Algorithm 4: Multiply):
   - Mul: 不带重线性化，degree会累加
   - MulRelin: 带重线性化，degree保持不变
 - ApplyEvaluationKey: 密钥切换操作，某些步骤(如ModUp的短暂密钥切换)要求degree=1
+
+================================================================================
+第二次问题分析与修复
+================================================================================
+
+【问题描述】
+在第[8]部分执行MulRelinNew时panic:
+  panic: level cannot be larger than max level
+
+错误堆栈显示问题发生在GadgetProduct函数中:
+  ring.Ring.AtLevel(...)  # level=1, max level=0
+  ring/ringqp.Ring.AtLevel(..., 0x1?, 0x3)  # level=1, maxLevelP=3
+  core/rlwe.Evaluator.GadgetProductLazy(...)
+
+【问题原因】
+参数和密钥的级别不匹配:
+
+1. paramsBTP (ResidualParameters):
+   - Q有2个素数(level 0和level 1)
+   - MaxLevel = 1
+   - P有1个素数
+   - MaxLevelP = 0
+
+2. btpParams.BootstrappingParameters:
+   - Q有更多素数(levels 0到16,共17个)
+   - MaxLevel = 16
+   - P有更多素数
+   - MaxLevelP = 3
+
+3. btpKeys (评估密钥):
+   - 是在btpParams.BootstrappingParameters上生成的
+   - 重线性化密钥rlk: 对应BootstrappingParameters的完整模数链
+   - Galois密钥gk: 对应BootstrappingParameters的完整模数链
+
+4. 尝试执行 evaluatorBTP.MulRelinNew(ctA, ctB):
+   - ctA和ctB是在paramsBTP上创建的(level=1)
+   - 但评估器(evaluatorBTP)使用了btpKeys
+   - MulRelinNew内部调用GadgetProduct时
+   - GadgetProduct尝试使用BootstrappingParameters的所有level
+   - 但密文只有paramsBTP的level信息
+   - 导致参数级别不匹配panic
+
+【修复方案】
+使用btpEvaluator的内部ckks.Evaluator,而不是创建新的评估器:
+
+将:
+  evaluatorBTP := ckks.NewEvaluator(paramsBTP, btpKeys)
+  ctMul1, _ := evaluatorBTP.MulRelinNew(ctA, ctB)
+替换为:
+  ctMul1, _ := btpEvaluator.Evaluator.MulRelinNew(ctA, ctB)
+
+原理:
+- btpEvaluator内部已经正确配置了BootstrappingParameters
+- btpEvaluator.Evaluator的ckks.Evaluator是使用BootstrappingParameters创建的
+- 因此它能够正确处理level=1的密文
+- 内部的重线性化和Rescale操作使用正确的参数级别
+
+修复位置:
+- main.go 第470-477行附近:
+  删除: evaluatorBTP := ckks.NewEvaluator(paramsBTP, btpKeys)
+  使用: ctMul1, _ := btpEvaluator.Evaluator.MulRelinNew(ctA, ctB)
+
+- main.go 第487行附近:
+  使用: ctMul2, _ := btpEvaluator.Evaluator.MulRelinNew(ctMul1BTP, ctB)
+
+- main.go Rescale调用也需要使用btpEvaluator.Evaluator:
+  btpEvaluator.Evaluator.Rescale(ctMul1, ctMul1)
+  btpEvaluator.Evaluator.Rescale(ctMul2, ctMul2)
+
+【Bootstrapping参数层级结构说明】
+Bootstrapping使用两层参数:
+1. ResidualParameters (残差参数/原始参数):
+   - 用于常规的同态运算
+   - CT在这里创建(level通常较低)
+   - 演示中paramsBTP.MaxLevel = 1
+
+2. BootstrappingParameters (Bootstrap电路参数):
+   - 用于Bootstrap操作
+   - 包含Bootstrap电路所需的额外模数链
+   - 演示中btpParams.BootstrappingParameters.MaxLevel = 16
+
+评估密钥btpKeys必须与Bootstrap操作兼容,
+因为Bootstrap内部使用这些密钥执行同态解密。
+当MulRelinNew需要使用btpKeys时,
+必须确保评估器也是用BootstrappingParameters创建的。
