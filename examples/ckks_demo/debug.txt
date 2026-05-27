@@ -1,0 +1,116 @@
+[error]:
+  执行Bootstrapping恢复level...
+  Bootstrap错误: cannot BootstrapMany: cannot ApplyEvaluationKey: input and output Ciphertext must be of degree 1
+exit status 234
+
+[call stack]:
+rlwe.Evaluator.ApplyEvaluationKey (c:\Cyril\OpenCode\lattigo_ckks\core\rlwe\evaluator_evaluationkey.go:39)
+bootstrapping.Evaluator.ModUp (c:\Cyril\OpenCode\lattigo_ckks\circuits\ckks\bootstrapping\evaluator.go:620)
+bootstrapping.Evaluator.bootstrap (c:\Cyril\OpenCode\lattigo_ckks\circuits\ckks\bootstrapping\evaluator.go:526)
+bootstrapping.Evaluator.Evaluate (c:\Cyril\OpenCode\lattigo_ckks\circuits\ckks\bootstrapping\evaluator.go:318)
+bootstrapping.Evaluator.BootstrapMany (c:\Cyril\OpenCode\lattigo_ckks\circuits\ckks\bootstrapping\evaluator.go:268)
+bootstrapping.Evaluator.Bootstrap (c:\Cyril\OpenCode\lattigo_ckks\circuits\ckks\bootstrapping\evaluator.go:221)
+main.main (c:\Cyril\OpenCode\lattigo_ckks\examples\ckks_demo\main.go:478)
+runtime.main (c:\Program Files\Go\src\runtime\proc.go:290)
+runtime.goexit (c:\Program Files\Go\src\runtime\asm_amd64.s:1771)
+
+[full output]:
+> go run "c:\Cyril\OpenCode\lattigo_ckks\examples\ckks_demo\main.go"
+========================================
+  CKKS同态加密演示程序
+  Lattigo库 v6
+========================================
+
+[1] 设定CKKS环境参数
+----------------------------------------
+  环多项式次数: N = 2^10 = 1024
+  密文模数链Q:
+    Q[0] = 56 bits (≈ 2^56)
+    Q[1] = 101 bits (≈ 2^101)
+  总模数比特数: 155
+  辅助模数P: 1个素数
+  最大乘法深度: 1
+  最大槽数量: 512
+  默认缩放因子: 2^40 ≈ 1.10e+12
+  精度模式: PREC64 (64位)
+
+[2] 创建明文向量A和B
+----------------------------------------
+  明文向量 A (复数): [0.5000+0.1000i, 1.0000+0.2000i, 1.5000+0.3000i, 2.0000+0.4000i]
+  明文向量 B (复数): [0.1000+0.5000i, 0.2000+1.0000i, 0.3000+1.5000i, 0.4000+2.0000i]
+
+[3] 编码操作 (Encode)
+----------------------------------------
+  执行Encoder.Encode(values, plaintext)...
+  编码成功!
+  明文A的缩放因子: 2^%!d(float64=40) = 1.10e+12
+  明文B的缩放因子: 2^%!d(float64=40) = 1.10e+12
+
+[4] 加密操作 (Encrypt)
+----------------------------------------
+  已生成密钥对 (sk, pk)
+  执行Encryptor.EncryptNew(plaintext)...
+  加密成功!
+  密文A: degree=1, level=1, scale=2^%!d(float64=40)
+  密文B: degree=1, level=1, scale=2^%!d(float64=40)
+
+[5] 解密操作验证 (Decrypt)
+----------------------------------------
+  执行Decryptor.DecryptNew(ciphertext)...
+  解密并解码后的值:
+    A: [0.5000+0.1000i, 1.0000+0.2000i, 1.5000+0.3000i, 2.0000+0.4000i]
+    B: [0.1000+0.5000i, 0.2000+1.0000i, 0.3000+1.5000i, 0.4000+2.0000i]
+    原始A: [0.5000+0.1000i, 1.0000+0.2000i, 1.5000+0.3000i, 2.0000+0.4000i]
+    原始B: [0.1000+0.5000i, 0.2000+1.0000i, 0.3000+1.5000i, 0.4000+2.0000i]
+    A的解密误差: 4.01e-10
+    B的解密误差: 1.52e-10
+
+[6] 同态乘法操作 (Multiply & Rescale)
+----------------------------------------
+  参数设计说明:
+    - 模数链Q有2个素数, 最大乘法深度 = 2
+    - LevelsConsumedPerRescaling = 1 (PREC64模式下每个rescale消耗1个level)
+    - 这意味着:
+      乘法1次后rescale: A*B 成功 ✓
+      乘法2次后rescale: A*B*B 可能因噪声溢出而失败 ✗
+
+  执行第一次乘法: ctA * ctB
+  乘法后密文: degree=2, level=1, scale=2^%!d(float64=80)
+  Rescale后: degree=2, level=0, scale=2^%!d(float64=34.99999997312767)
+  A*B 的结果: [-0.0000+0.2600i, 0.0000+1.0400i, 0.0000+2.3400i, 0.0000+4.1600i]
+  期望A*B:    [0.0000+0.2600i, 0.0000+1.0400i, 0.0000+2.3400i, 0.0000+4.1600i]
+
+  执行第二次乘法: (ctA*ctB) * ctB
+错误: 第二次乘法失败: cannot Mul: op0 and op1 total degree cannot exceed 2 but is 3
+  乘法后密文: degree=2, level=0, scale=2^%!d(float64=40)
+  尝试Rescale (预期失败或结果不准确)...
+  密文已在level=0, 无法再进行rescale
+Mul已出现错误，跳过执行解密验证第二次乘法的结果
+
+[7] Bootstrapping操作
+----------------------------------------
+  设置Bootstrapping参数...
+  原始参数: LogN=10, MaxLevel=1
+  Bootstrapping参数: LogN=10, MaxLevel=16
+  Bootstrapping电路深度: 15
+  生成Bootstrapping密钥...
+  原始值A: [0.1000+0.0500i, 0.2000+0.1000i, 0.3000+0.1500i, 0.4000+0.2000i]
+  加密后在level=0
+  执行Bootstrap(ct)...
+  Bootstrapping后: level=1 (恢复到level=1)
+  Bootstrapping后解密结果: [0.1000+0.0500i, 0.2000+0.1000i, 0.3000+0.1500i, 0.4000+0.2000i]
+  原始值: [0.1000+0.0500i, 0.2000+0.1000i, 0.3000+0.1500i, 0.4000+0.2000i]
+  误差: 2.11e-09
+
+[8] Bootstrapping后再次执行 A*B*B
+----------------------------------------
+  创建用于后续演示的新密文...
+  密文A: level=1
+  密文B: level=1
+
+  第一次乘法: ctA * ctB
+  结果: level=0
+
+  执行Bootstrapping恢复level...
+  Bootstrap错误: cannot BootstrapMany: cannot ApplyEvaluationKey: input and output Ciphertext must be of degree 1
+exit status 234
