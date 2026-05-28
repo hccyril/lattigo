@@ -1,5 +1,42 @@
 package bootstrapping
 
+// ============================ 【中文文件说明】 ============================
+// 本文件定义 Bootstrapping 的参数结构体及其创建方法。
+//
+// Bootstrapping 参数比 CKKS 基础参数复杂得多，因为它需要：
+//   1. 两组 CKKS 参数：原始参数（Residual）和 Bootstrapping 电路参数
+//   2. 同态编码/解码矩阵的参数（CoeffsToSlots, SlotsToCoeffs）
+//   3. 同态模约简的参数（EvalMod）
+//   4. 可选的迭代参数（用于提高精度）
+//
+// 【Parameters 结构体各字段】：
+//   - ResidualParameters: 原始 CKKS 参数（Bootstrapping 电路之外的参数）
+//     即用户创建密文时使用的参数。Bootstrapping 后密文恢复到这个参数集的 level。
+//
+//   - BootstrappingParameters: Bootstrapping 电路内部的 CKKS 参数
+//     这是一个扩展的参数集，包含更多的素数（更大的模数链），
+//     为 Bootstrapping 电路的 5 个步骤提供足够的计算深度。
+//
+//   - SlotsToCoeffsParameters: 同态解码（槽 → 系数）的线性变换矩阵参数
+//     定义了 IDFT 矩阵的分解方式和缩放因子。
+//
+//   - Mod1ParametersLiteral: 同态模约简（x mod 1）的参数
+//     包括多项式近似的类型（Cos/Sin）、度数、区间 K 等。
+//
+//   - CoeffsToSlotsParameters: 同态编码（系数 → 槽）的线性变换矩阵参数
+//
+//   - IterationsParameters: Bootstrapping 迭代参数（可选）
+//     用于提高 Bootstrapping 的精度，通过多次迭代减少噪声。
+//
+//   - EphemeralSecretWeight: 短暂密钥的 Hamming weight
+//     如果 > 0，则在 ModUp 阶段切换到稀疏密钥，减少噪声。
+//
+// 【关键约束】：
+//   原始参数的素数 Q_i 必须满足 Q_i ≡ 1 (mod 2N_BTS)，
+//   其中 N_BTS 是 Bootstrapping 参数的环度。
+//   这是因为两组参数共享相同的素数 Q_i。
+// =====================================================================
+
 import (
 	"encoding/json"
 	"fmt"

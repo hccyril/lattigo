@@ -1,5 +1,22 @@
 package ckks
 
+// ============================ 【中文文件说明】 ============================
+// 本文件实现 CKKS 的同态运算评估器（Evaluator）。
+// 【对应论文】[CKKS2017] 的以下部分：
+//   - Algorithm 4 (Multiply): 同态乘法，ct_a × ct_b → 度为 2 的密文
+//   - Section 3.3 (Rescaling): 重缩放，控制乘法后的噪声增长
+//   - Section 3.4 (Rotation): 槽旋转，通过 Galois 自同构实现
+//   - Section 3.5 (Relinearization): 重线性化，将度为 2 的密文降回度为 1
+//
+// 评估器提供的同态运算：
+//   - 加法/减法: Add, Sub（噪声线性增长，不消耗 level）
+//   - 乘法: Mul, MulRelin（噪声平方增长，乘法后度变为 2）
+//   - 重缩放: Rescale, RescaleTo（消耗 level，控制噪声）
+//   - 旋转: Rotate（循环移位槽）
+//   - 共轭: Conjugate（复数共轭）
+//   - 缩放: ScaleUp, SetScale
+// =========================================================================
+
 import (
 	"fmt"
 	"math/big"
@@ -13,20 +30,37 @@ import (
 
 // Evaluator is a struct that holds the necessary elements to execute the homomorphic operations between Ciphertexts and/or Plaintexts.
 // It also holds a memory buffer used to store intermediate computations.
+//
+// 【中文说明】CKKS 同态运算评估器。组合了三个核心组件：
+//   1. Encoder（编码器）: 用于在需要时将向量编码为明文
+//   2. rlwe.Evaluator（RLWE 评估器）: 提供底层的多项式运算和密钥操作
+//   3. pool（内存池）: 存储中间计算结果，减少内存分配
+// 评估器需要评估密钥（EvaluationKeySet）来执行需要密钥的操作：
+//   - 重线性化（Relinearization）: 需要 RelinearizationKey
+//   - 旋转（Rotation）: 需要对应的 GaloisKey
+//   - 共轭（Conjugation）: 需要共轭 GaloisKey
 type Evaluator struct {
 	*Encoder
 	*rlwe.Evaluator
 	pool *rlwe.BufferPool
+	// 各字段中文说明见上方【中文说明】注释块
 }
 
 // NewEvaluator creates a new [Evaluator], that can be used to do homomorphic
 // operations on the Ciphertexts and/or Plaintexts. It stores a memory buffer
 // and Ciphertexts that will be used for intermediate values.
+//
+// 【中文说明】创建一个新的 CKKS 评估器。
+// 输入: parameters — CKKS 参数；evk — 评估密钥集（含重线性化密钥和 Galois 密钥）
+// 如果 evk 为 nil，则只能执行不需要密钥的操作（加法、标量乘法等）。
 func NewEvaluator(parameters Parameters, evk rlwe.EvaluationKeySet) *Evaluator {
 
 	return &Evaluator{
+		// 【步骤1】创建编码器，用于需要时自动将向量编码为明文
 		Encoder:   NewEncoder(parameters),
+		// 【步骤2】创建底层 RLWE 评估器，提供多项式运算能力
 		Evaluator: rlwe.NewEvaluator(parameters.Parameters, evk),
+		// 【步骤3】创建内存池，用于复用中间计算缓冲区
 		pool:      rlwe.NewPool(parameters.RingQP()),
 	}
 }
