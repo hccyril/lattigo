@@ -1,5 +1,39 @@
 package bootstrapping
 
+// ============================ 【中文文件说明】 ============================
+// 本文件实现 CKKS Bootstrapping 的核心评估器（[HEAAN2019] Algorithm 1）。
+//
+// 【完整 Bootstrapping 流程】（Evaluate 方法的 5 个步骤）：
+//
+// 步骤 1: ScaleDown（缩放下降）→ ScaleDown()
+//   目标: 将密文的 scale 调整到 q₀/MessageRatio，并降到 level 0
+//   操作: ct ← ct × round(当前消息比率 / 目标消息比率)，然后 Rescale 到 level 0
+//   目的: 确保消息落在模约简多项式近似的有效范围内 [-K, K]
+//
+// 步骤 2: ModUp（模数提升）→ ModUp()
+//   目标: 将密文模数从 q₀ 扩展到整个模数链 Q
+//   操作: 使用密钥切换技术，将 ct ∈ R_{q₀} 转换为 ct ∈ R_Q
+//   关键: 如果使用了短暂密钥（EphemeralSecretWeight > 0），同时切换到稀疏密钥
+//
+// 步骤 3: CoeffsToSlots（同态编码，系数 → 槽）→ CoeffsToSlots()
+//   目标: 将密文从系数表示转换为槽表示
+//   操作: 使用同态 DFT（离散傅里叶变换），类似于编码器的 IFFT
+//   分解: DFT 矩阵分解为多层线性变换（SubSum + DFT 子矩阵）
+//   输出: ctReal = Enc(DFT(real)), ctImag = Enc(DFT(imag))
+//
+// 步骤 4: EvalMod（同态模约简）→ EvalMod()
+//   目标: 计算 m mod 1（提取小数部分）
+//   操作: 使用多项式近似 sin/cos 函数
+//   核心技巧: Double-Angle 公式减少多项式度数
+//     cos(2x) = 2cos²(x) - 1，可以迭代应用
+//   近似方法: Cosine 级数或 Chebyshev 多项式
+//
+// 步骤 5: SlotsToCoeffs（同态解码，槽 → 系数）→ SlotsToCoeffs()
+//   目标: 将密文从槽表示转换回系数表示
+//   操作: 使用同态 IDFT（逆离散傅里叶变换）
+//   分解: IDFT 矩阵同样分解为多层线性变换
+// =====================================================================
+
 import (
 	"fmt"
 	"math"
@@ -518,11 +552,15 @@ func checkMessageRatio(ct *rlwe.Ciphertext, msgRatio float64, r *ring.Ring) bool
 func (eval Evaluator) bootstrap(ctIn *rlwe.Ciphertext) (ctOut *rlwe.Ciphertext, errScale *rlwe.Scale, err error) {
 
 	// Step 1: scale to q/|m|
+	// 【中文步骤1】ScaleDown — 缩放密文到 level 0，scale = Q[0]/MessageRatio
+	// 目的：确保消息范围适合后续的模约简多项式近似
 	if ctOut, errScale, err = eval.ScaleDown(ctIn); err != nil {
 		return
 	}
 
 	// Step 2 : Extend the basis from q to Q
+	// 【中文步骤2】ModUp — 将模数从 q₀ 扩展到整个模数链 Q
+	// 使用密钥切换技术，同时切换到短暂的稀疏密钥（如果使用）
 	if ctOut, err = eval.ModUp(ctOut); err != nil {
 		return
 	}
@@ -531,17 +569,23 @@ func (eval Evaluator) bootstrap(ctIn *rlwe.Ciphertext) (ctOut *rlwe.Ciphertext, 
 	// ctReal = Ecd(real)
 	// ctImag = Ecd(imag)
 	// If n < N/2 then ctReal = Ecd(real||imag)
+	// 【中文步骤3】CoeffsToSlots — 同态编码（系数 → 槽）
+	// 使用同态 DFT 将密文从系数表示转换为槽表示
+	// ctReal = Enc(DFT(real)), ctImag = Enc(DFT(imag))
 	var ctReal, ctImag *rlwe.Ciphertext
 	if ctReal, ctImag, err = eval.CoeffsToSlots(ctOut); err != nil {
 		return
 	}
 
 	// Step 4 : EvalMod (Homomorphic modular reduction)
+	// 【中文步骤4a】EvalMod — 同态模约简（实部）
+	// 使用多项式近似提取小数部分，是 Bootstrapping 的核心步骤
 	if ctReal, err = eval.EvalMod(ctReal); err != nil {
 		return
 	}
 
 	// Step 4 : EvalMod (Homomorphic modular reduction)
+	// 【中文步骤4b】EvalMod — 同态模约简（虚部，如果存在）
 	if ctImag != nil {
 		if ctImag, err = eval.EvalMod(ctImag); err != nil {
 			return
@@ -549,6 +593,8 @@ func (eval Evaluator) bootstrap(ctIn *rlwe.Ciphertext) (ctOut *rlwe.Ciphertext, 
 	}
 
 	// Step 5 : SlotsToCoeffs (Homomorphic decoding)
+	// 【中文步骤5】SlotsToCoeffs — 同态解码（槽 → 系数）
+	// 使用同态 IDFT 将密文从槽表示转换回系数表示
 	if ctOut, err = eval.SlotsToCoeffs(ctReal, ctImag); err != nil {
 		return
 	}

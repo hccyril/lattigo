@@ -1,5 +1,16 @@
 package ckks
 
+// ============================ 【中文文件说明】 ============================
+// 本文件定义 CKKS 方案的参数结构体及其相关方法。
+// 【对应论文】[CKKS2017] Section 5 (Parameter Selection)
+//
+// CKKS 参数决定了：
+//   - 环的度 N = 2^LogN（影响安全性和槽数量）
+//   - 模数链 Q = q₀ × q₁ × ... × qₗ（影响最大乘法深度）
+//   - 缩放因子 Δ = 2^LogDefaultScale（影响数值精度）
+//   - 精度模式 PREC64/PREC128（决定每次 Rescale 消耗的 level 数）
+// =========================================================================
+
 import (
 	"encoding/json"
 	"fmt"
@@ -24,11 +35,19 @@ import (
 //
 // The PrecisionMode is chosen automatically based on the provided initial
 // `LogDefaultScale` value provided by the user.
+//
+// 【中文说明】精度模式，定义了 CKKS 方案中明文缩放因子的精度位数。
+// 该模式决定了存储初始消息值需要多少机器字，以及每次 Rescale 消耗多少个素数。
+//   - PREC64: 64 位精度，每次 Rescale 消耗 1 个 level（素数）
+//   - PREC128: 128 位精度，每次 Rescale 消耗 2 个 level（素数）
+// 【对应论文】[CKKS2017] Section 3.3 — 缩放因子 Δ 控制数值精度
 type PrecisionMode int
 
 const (
 	NTTFlag = true
+	// PREC64: 64 位精度模式，默认模式，缩放因子最大支持 2^64
 	PREC64  = PrecisionMode(0)
+	// PREC128: 128 位精度模式，缩放因子最大支持 2^128，每次 Rescale 消耗 2 个 level
 	PREC128 = PrecisionMode(1)
 )
 
@@ -44,6 +63,15 @@ const (
 // Optionally, users may specify the error variance (Sigma), the secrets' density (H), the ring
 // type (RingType) and the number of slots (in log_2, LogSlots). If left unset, standard default values for
 // these field are substituted at parameter creation (see NewParametersFromLiteral).
+//
+// 【中文说明】CKKS 参数的字面量表示，用户可以直接填写原始数值来定义参数。
+// 填写后必须通过 NewParametersFromLiteral 函数进行验证，生成正式的 Parameters 对象。
+//
+// 必填字段:
+//   - LogN: 对数多项式次数，N = 2^LogN，决定环的度和最大槽数量
+//   - Q: 密文模数链（素数列表），每个素数增加一个乘法深度（或通过 LogQ 指定比特长度）
+//   - P: 辅助模数链（用于密钥交换优化），不参与同态容量计算（或通过 LogP 指定比特长度）
+//   - LogDefaultScale: 默认缩放因子的对数值，Δ = 2^LogDefaultScale
 type ParametersLiteral struct {
 	LogN            int
 	LogNthRoot      int
@@ -55,6 +83,7 @@ type ParametersLiteral struct {
 	Xs              ring.DistributionParameters
 	RingType        ring.Type
 	LogDefaultScale int
+	// 各字段中文说明见上方【中文说明】注释块
 }
 
 // GetRLWEParametersLiteral returns the [rlwe.ParametersLiteral] from the target [ckks.ParameterLiteral].
@@ -76,6 +105,9 @@ func (p ParametersLiteral) GetRLWEParametersLiteral() rlwe.ParametersLiteral {
 
 // Parameters represents a parameter set for the CKKS cryptosystem. Its fields are private and
 // immutable. See [ParametersLiteral] for user-specified parameters.
+//
+// 【中文说明】经过验证的 CKKS 参数集。字段私有且不可变，确保参数一致性。
+// 封装了底层 RLWE 参数，并添加了 CKKS 特有的缩放因子信息。
 type Parameters struct {
 	rlwe.Parameters
 }
@@ -87,6 +119,10 @@ type Parameters struct {
 // the conjugate-invariant ring.
 //
 // See [rlwe.NewParametersFromLiteral] for default values of the other optional fields.
+//
+// 【中文说明】从参数字面量创建经过验证的 CKKS 参数集。
+// 该函数会验证所有参数的合法性，包括素数是否满足 NTT 条件、缩放因子是否有效等。
+// 【对应论文】[CKKS2017] Section 5.1 — 参数选择原则
 func NewParametersFromLiteral(pl ParametersLiteral) (Parameters, error) {
 	rlweParams, err := rlwe.NewParametersFromLiteral(pl.GetRLWEParametersLiteral())
 	if err != nil {
@@ -132,11 +168,19 @@ func (p Parameters) GetRLWEParameters() *rlwe.Parameters {
 }
 
 // MaxLevel returns the maximum ciphertext level
+//
+// 【中文说明】返回密文的最大层级。level = |Q| - 1，即模数链中素数的个数减 1。
+// level 越高，可用的模数越多，能执行的乘法次数越多。每次 Rescale 消耗 level（1 或 2）。
 func (p Parameters) MaxLevel() int {
 	return p.QCount() - 1
 }
 
 // MaxDimensions returns the maximum dimension of the matrix that can be SIMD packed in a single plaintext polynomial.
+//
+// 【中文说明】返回单个明文多项式可以 SIMD 打包的最大矩阵维度。
+// CKKS 使用 SIMD 技术将多个复数打包到一个明文多项式中：
+//   - Standard 环: 最多 N/2 个槽（slot），即 1×(N/2) 的矩阵
+//   - ConjugateInvariant 环: 最多 N 个槽，即 1×N 的矩阵
 func (p Parameters) MaxDimensions() ring.Dimensions {
 	switch p.RingType() {
 	case ring.Standard:
@@ -178,6 +222,10 @@ func (p Parameters) LogMaxSlots() int {
 
 // LogDefaultScale returns the log2 of the default plaintext
 // scaling factor (rounded to the nearest integer).
+//
+// 【中文说明】返回默认缩放因子的对数值（以 2 为底，四舍五入到整数）。
+// 缩放因子 Δ = 2^LogDefaultScale，用于 CKKS 的定点数表示。
+// 编码时: m_scaled = round(m × Δ)，解密后: m = m_scaled / Δ
 func (p Parameters) LogDefaultScale() int {
 	return int(math.Round(math.Log2(p.DefaultScale().Float64())))
 }
@@ -196,6 +244,10 @@ func (p Parameters) EncodingPrecision() (prec uint) {
 
 // PrecisionMode returns the precision mode of the parameters.
 // This value can be [ckks.PREC64] or [ckks.PREC128].
+//
+// 【中文说明】返回精度模式。根据 LogDefaultScale 自动选择：
+//   - LogDefaultScale ≤ 64 → PREC64（每次 Rescale 消耗 1 个 level）
+//   - LogDefaultScale > 64 → PREC128（每次 Rescale 消耗 2 个 level）
 func (p Parameters) PrecisionMode() PrecisionMode {
 	if p.LogDefaultScale() <= 64 {
 		return PREC64
@@ -206,6 +258,11 @@ func (p Parameters) PrecisionMode() PrecisionMode {
 // LevelsConsumedPerRescaling returns the number of levels (i.e. primes)
 // consumed per rescaling. This value is 1 if the precision mode is PREC64
 // and is 2 if the precision mode is PREC128.
+//
+// 【中文说明】返回每次重缩放（Rescale）操作消耗的 level 数量。
+//   - PREC64 模式: 消耗 1 个 level（1 个素数）
+//   - PREC128 模式: 消耗 2 个 level（2 个素数）
+// 这决定了模数链的有效乘法深度。
 func (p Parameters) LevelsConsumedPerRescaling() int {
 	switch p.PrecisionMode() {
 	case PREC128:
@@ -227,6 +284,11 @@ func (p Parameters) GetOptimalScalingFactor(a, c rlwe.Scale, level int) (b rlwe.
 
 // MaxDepth returns the maximum depth enabled by the parameters,
 // which is obtained as p.MaxLevel() / p.LevelsConsumedPerRescaling().
+//
+// 【中文说明】返回最大乘法深度。
+// 计算公式: MaxDepth = MaxLevel() / LevelsConsumedPerRescaling()
+// 即模数链中可用于乘法操作的总次数（每次乘法后需要一次 Rescale）。
+// 例如: 若有 2 个素数，PREC64 模式，则 MaxDepth = 1（只能做 1 次乘法+Rescale）
 func (p Parameters) MaxDepth() int {
 	return p.MaxLevel() / p.LevelsConsumedPerRescaling()
 }

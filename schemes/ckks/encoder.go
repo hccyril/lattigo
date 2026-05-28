@@ -1,5 +1,31 @@
 package ckks
 
+// ============================ 【中文文件说明】 ============================
+// 本文件实现 CKKS 的编码器和解码器（[CKKS2017] Algorithm 1）。
+//
+// 【编码过程】（Encode）:
+//   1. 输入复数向量 m = (m₁, ..., m_{N/2}) ∈ C^{N/2}
+//   2. 执行特殊 iDFT（逆离散傅里叶变换）: a = iDFT(m)
+//      将复数域的消息转换到多项式系数域
+//   3. 将结果量化为整数: a' = round(a × Δ)
+//      其中 Δ = 2^LogDefaultScale 是缩放因子
+//   4. 将 a' 填充到明文多项式的系数中
+//   5. 对多项式执行 NTT 和 Montgomery 变换（加速后续同态运算）
+//   公式: Encode(m) = ⌊Δ · iDFT(m)⌉ mod Q
+//
+// 【解码过程】（Decode）:
+//   1. 如果明文是 NTT 形式，先执行逆 NTT（INTT）恢复系数表示
+//   2. 将多项式系数除以缩放因子 Δ: a = 系数 / Δ
+//   3. 执行特殊 DFT（离散傅里叶变换）: m = DFT(a)
+//      将多项式系数域转换回复数域
+//   公式: Decode(a(X)) = DFT(a(X)) / Δ
+//
+// 【特殊 DFT】与标准 DFT 的区别:
+//   标准 DFT: 基于 2N 次单位根 ω，计算 X[k] = Σ x[n]·ω^{nk}
+//   CKKS 特殊 DFT: 基于旋转群 5^j 的排列，确保共轭对称性
+//   旋转群: rotGroup = {5^0, 5^1, 5^2, ...} mod 2N
+// =========================================================================
+
 import (
 	"fmt"
 	"math"
@@ -55,17 +81,29 @@ const GaloisGen uint64 = ring.GaloisGen
 //	                                      |
 //	                                      |
 //		Slots: Complex^{N/2} -> iDFT -----┘
+//
+// 【中文说明】CKKS 编码器结构体，实现了消息与明文多项式之间的编解码转换。
+//
+// 两种编码域的对比：
+//   - Coefficients（系数编码）: 直接将实数向量嵌入多项式系数。
+//     优点: 可以编码最多 N 个实数。
+//     缺点: 乘法变为多项式卷积（非逐元素），不支持槽旋转。
+//
+//   - Slots（槽编码，默认推荐）: 先对复数向量做特殊 iDFT，再嵌入多项式。
+//     优点: 乘法保持逐元素复数乘法，支持槽旋转（Rotate）。
+//     缺点: 最多编码 N/2 个复数。
+//
+// 编码流程图:
+//   系数编码: 实数向量 R^N → 直接嵌入 → 明文多项式 ∈ Z_Q[X]/(X^N+1)
+//   槽编码:   复数向量 C^{N/2} → 特殊iDFT → 实数向量 R^N → 嵌入 → 明文多项式
 type Encoder struct {
 	parameters Parameters
-
 	prec uint
-
 	m        int
 	rotGroup []int
-
 	roots interface{}
-
 	// Pools used to recycle large objects.
+	// 各字段中文说明见上方【中文说明】注释块
 	BuffBigIntPool  structs.BufferPool[*[]*big.Int]
 	BuffComplexPool structs.BufferPool[Complex]
 	poolQ           *ring.BufferPool
@@ -75,11 +113,24 @@ type Encoder struct {
 // Optional field `precision` can be given. If precision is empty
 // or <= 53, then float64 and complex128 types will be used to
 // perform the encoding. Else *[big.Float] and *[bignum.Complex] will be used.
+//
+// 【中文说明】创建一个新的 CKKS 编码器。
+//
+// 初始化步骤：
+//   1. 计算循环群阶 m = NthRoot = 2N
+//   2. 生成旋转群 rotGroup = {5^0, 5^1, 5^2, ...} mod m（5 是模 2N 的原根）
+//   3. 预计算 DFT 根（roots），根据精度选择 complex128 或 *bignum.Complex
+//   4. 初始化内存池，用于复用大对象，减少 GC 压力
+//
+// 【对应论文】[CKKS2017] — 旋转群基于 5 的幂次，因为 5 是模 2N 的原根
 func NewEncoder(parameters Parameters, precision ...uint) (ecd *Encoder) {
 
 	/* #nosec G115 -- library requires 64-bit system -> int = int64 */
+	// 【步骤1】获取循环群的阶 m = NthRoot = 2N
 	m := int(parameters.RingQ().NthRoot())
 
+	// 【步骤2】生成旋转群 rotGroup = {5^0, 5^1, ..., 5^(N/2-1)} mod m
+	// 旋转群用于特殊 DFT 的索引排列，确保共轭对称性
 	rotGroup := make([]int, m>>2)
 	fivePows := 1
 	for i := 0; i < m>>2; i++ {
@@ -762,14 +813,28 @@ func (ecd Encoder) decodePublic(pt *rlwe.Plaintext, values FloatSlice, logprec f
 }
 
 // IFFT evaluates the special 2^{LogN}-th encoding discrete Fourier transform on [FloatSlice].
+//
+// 【中文说明】执行特殊的逆离散傅里叶变换（iDFT），用于编码。
+// 将复数向量从"槽域"转换到"系数域"。
+//
+// 特殊 DFT 与标准 DFT 的区别：
+//   标准 DFT: 基于 2N 次单位根 ω，计算 X[k] = Σ x[n]·ω^{nk}
+//   CKKS 特殊 DFT: 基于旋转群 5^j 的排列，确保共轭对称性
+//
+// 【对应论文】[CKKS2017] Section 3.2, Algorithm 1 中的 iDFT 步骤
+// 公式: a_j = (1/N) Σ_{k=0}^{N/2-1} m_k · ζ^{-(2j+1)·5^k}  (ζ 是 2N 次单位根)
 func (ecd Encoder) IFFT(values FloatSlice, logN int) (err error) {
+	// 【步骤1】根据输入值类型选择 double 或 arbitrary 精度的特殊 IFFT
 	switch values := values.(type) {
 	case []complex128:
+		// 【double 精度】使用 complex128 算术（≤53 位精度）
 		switch roots := ecd.roots.(type) {
 		case []complex128:
 			if logN < 4 {
+				// 小规模：使用标准 SpecialIFFTDouble
 				SpecialIFFTDouble(values, 1<<logN, ecd.m, ecd.rotGroup, ecd.roots.([]complex128))
 			} else {
+				// 大规模：使用展开 8 层的优化版本 SpecialiFFTDoubleUnrolled8
 				SpecialiFFTDoubleUnrolled8(values, 1<<logN, ecd.m, ecd.rotGroup, ecd.roots.([]complex128))
 			}
 		default:
@@ -777,6 +842,7 @@ func (ecd Encoder) IFFT(values FloatSlice, logN int) (err error) {
 		}
 
 	case []*bignum.Complex:
+		// 【任意精度】使用 *bignum.Complex 算术（>53 位精度）
 		switch roots := ecd.roots.(type) {
 		case []*bignum.Complex:
 			SpecialIFFTArbitrary(values, 1<<logN, ecd.m, ecd.rotGroup, ecd.roots.([]*bignum.Complex))
@@ -791,9 +857,17 @@ func (ecd Encoder) IFFT(values FloatSlice, logN int) (err error) {
 }
 
 // FFT evaluates the special 2^{LogN}-th decoding discrete Fourier transform on [FloatSlice].
+//
+// 【中文说明】执行特殊的离散傅里叶变换（DFT），用于解码。
+// 这是 IFFT 的逆操作，将多项式系数域的数据转换回复数域。
+//
+// 【对应论文】[CKKS2017] Section 3.2, Algorithm 1 中的 DFT 步骤
+// 公式: m_k = Σ_{j=0}^{N/2-1} a_j · ζ^{(2j+1)·5^k}  (ζ 是 2N 次单位根)
 func (ecd Encoder) FFT(values FloatSlice, logN int) (err error) {
+	// 【步骤1】根据输入值类型选择 double 或 arbitrary 精度的特殊 FFT
 	switch values := values.(type) {
 	case []complex128:
+		// 【double 精度】使用 complex128 算术
 		switch roots := ecd.roots.(type) {
 		case []complex128:
 			if logN < 4 {
@@ -806,6 +880,7 @@ func (ecd Encoder) FFT(values FloatSlice, logN int) (err error) {
 		}
 
 	case []*bignum.Complex:
+		// 【任意精度】使用 *bignum.Complex 算术
 		switch roots := ecd.roots.(type) {
 		case []*bignum.Complex:
 			SpecialFFTArbitrary(values, 1<<logN, ecd.m, ecd.rotGroup, roots)

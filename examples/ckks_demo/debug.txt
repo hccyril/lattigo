@@ -1,0 +1,252 @@
+[error]:
+  执行Bootstrapping恢复level...
+  Bootstrap错误: cannot BootstrapMany: cannot ApplyEvaluationKey: input and output Ciphertext must be of degree 1
+exit status 234
+
+[call stack]:
+rlwe.Evaluator.ApplyEvaluationKey (c:\Cyril\OpenCode\lattigo_ckks\core\rlwe\evaluator_evaluationkey.go:39)
+bootstrapping.Evaluator.ModUp (c:\Cyril\OpenCode\lattigo_ckks\circuits\ckks\bootstrapping\evaluator.go:620)
+bootstrapping.Evaluator.bootstrap (c:\Cyril\OpenCode\lattigo_ckks\circuits\ckks\bootstrapping\evaluator.go:526)
+bootstrapping.Evaluator.Evaluate (c:\Cyril\OpenCode\lattigo_ckks\circuits\ckks\bootstrapping\evaluator.go:318)
+bootstrapping.Evaluator.BootstrapMany (c:\Cyril\OpenCode\lattigo_ckks\circuits\ckks\bootstrapping\evaluator.go:268)
+bootstrapping.Evaluator.Bootstrap (c:\Cyril\OpenCode\lattigo_ckks\circuits\ckks\bootstrapping\evaluator.go:221)
+main.main (c:\Cyril\OpenCode\lattigo_ckks\examples\ckks_demo\main.go:478)
+runtime.main (c:\Program Files\Go\src\runtime\proc.go:290)
+runtime.goexit (c:\Program Files\Go\src\runtime\asm_amd64.s:1771)
+
+[full output]:
+> go run "c:\Cyril\OpenCode\lattigo_ckks\examples\ckks_demo\main.go"
+========================================
+  CKKS同态加密演示程序
+  Lattigo库 v6
+========================================
+
+[1] 设定CKKS环境参数
+----------------------------------------
+  环多项式次数: N = 2^10 = 1024
+  密文模数链Q:
+    Q[0] = 56 bits (≈ 2^56)
+    Q[1] = 101 bits (≈ 2^101)
+  总模数比特数: 155
+  辅助模数P: 1个素数
+  最大乘法深度: 1
+  最大槽数量: 512
+  默认缩放因子: 2^40 ≈ 1.10e+12
+  精度模式: PREC64 (64位)
+
+[2] 创建明文向量A和B
+----------------------------------------
+  明文向量 A (复数): [0.5000+0.1000i, 1.0000+0.2000i, 1.5000+0.3000i, 2.0000+0.4000i]
+  明文向量 B (复数): [0.1000+0.5000i, 0.2000+1.0000i, 0.3000+1.5000i, 0.4000+2.0000i]
+
+[3] 编码操作 (Encode)
+----------------------------------------
+  执行Encoder.Encode(values, plaintext)...
+  编码成功!
+  明文A的缩放因子: 2^%!d(float64=40) = 1.10e+12
+  明文B的缩放因子: 2^%!d(float64=40) = 1.10e+12
+
+[4] 加密操作 (Encrypt)
+----------------------------------------
+  已生成密钥对 (sk, pk)
+  执行Encryptor.EncryptNew(plaintext)...
+  加密成功!
+  密文A: degree=1, level=1, scale=2^%!d(float64=40)
+  密文B: degree=1, level=1, scale=2^%!d(float64=40)
+
+[5] 解密操作验证 (Decrypt)
+----------------------------------------
+  执行Decryptor.DecryptNew(ciphertext)...
+  解密并解码后的值:
+    A: [0.5000+0.1000i, 1.0000+0.2000i, 1.5000+0.3000i, 2.0000+0.4000i]
+    B: [0.1000+0.5000i, 0.2000+1.0000i, 0.3000+1.5000i, 0.4000+2.0000i]
+    原始A: [0.5000+0.1000i, 1.0000+0.2000i, 1.5000+0.3000i, 2.0000+0.4000i]
+    原始B: [0.1000+0.5000i, 0.2000+1.0000i, 0.3000+1.5000i, 0.4000+2.0000i]
+    A的解密误差: 4.01e-10
+    B的解密误差: 1.52e-10
+
+[6] 同态乘法操作 (Multiply & Rescale)
+----------------------------------------
+  参数设计说明:
+    - 模数链Q有2个素数, 最大乘法深度 = 2
+    - LevelsConsumedPerRescaling = 1 (PREC64模式下每个rescale消耗1个level)
+    - 这意味着:
+      乘法1次后rescale: A*B 成功 ✓
+      乘法2次后rescale: A*B*B 可能因噪声溢出而失败 ✗
+
+  执行第一次乘法: ctA * ctB
+  乘法后密文: degree=2, level=1, scale=2^%!d(float64=80)
+  Rescale后: degree=2, level=0, scale=2^%!d(float64=34.99999997312767)
+  A*B 的结果: [-0.0000+0.2600i, 0.0000+1.0400i, 0.0000+2.3400i, 0.0000+4.1600i]
+  期望A*B:    [0.0000+0.2600i, 0.0000+1.0400i, 0.0000+2.3400i, 0.0000+4.1600i]
+
+  执行第二次乘法: (ctA*ctB) * ctB
+错误: 第二次乘法失败: cannot Mul: op0 and op1 total degree cannot exceed 2 but is 3
+  乘法后密文: degree=2, level=0, scale=2^%!d(float64=40)
+  尝试Rescale (预期失败或结果不准确)...
+  密文已在level=0, 无法再进行rescale
+Mul已出现错误，跳过执行解密验证第二次乘法的结果
+
+[7] Bootstrapping操作
+----------------------------------------
+  设置Bootstrapping参数...
+  原始参数: LogN=10, MaxLevel=1
+  Bootstrapping参数: LogN=10, MaxLevel=16
+  Bootstrapping电路深度: 15
+  生成Bootstrapping密钥...
+  原始值A: [0.1000+0.0500i, 0.2000+0.1000i, 0.3000+0.1500i, 0.4000+0.2000i]
+  加密后在level=0
+  执行Bootstrap(ct)...
+  Bootstrapping后: level=1 (恢复到level=1)
+  Bootstrapping后解密结果: [0.1000+0.0500i, 0.2000+0.1000i, 0.3000+0.1500i, 0.4000+0.2000i]
+  原始值: [0.1000+0.0500i, 0.2000+0.1000i, 0.3000+0.1500i, 0.4000+0.2000i]
+  误差: 2.11e-09
+
+[8] Bootstrapping后再次执行 A*B*B
+----------------------------------------
+  创建用于后续演示的新密文...
+  密文A: level=1
+  密文B: level=1
+
+  第一次乘法: ctA * ctB
+  结果: level=0
+
+  执行Bootstrapping恢复level...
+  Bootstrap错误: cannot BootstrapMany: cannot ApplyEvaluationKey: input and output Ciphertext must be of degree 1
+exit status 234
+
+================================================================================
+问题分析与修复说明
+================================================================================
+
+【问题原因】
+在第[8]部分执行Bootstrapping时失败，错误信息为:
+  "cannot BootstrapMany: cannot ApplyEvaluationKey: input and output Ciphertext must be of degree 1"
+
+根本原因:
+1. 在执行 ctA * ctB 乘法时，调用的是 evaluatorBTP.MulNew()
+2. MulNew() 是"不带重线性化"的乘法
+3. 不带重线性化的乘法会导致密文的多项式度(degree)从1变为2
+   - degree=1的密文: ct = (c0, c1)，包含2个多项式
+   - degree=2的密文: ct = (c0, c1, c2)，包含3个多项式（乘法产生的）
+4. 虽然后续调用了 Rescale() 降低level，但degree仍然是2
+5. Bootstrapping的 ModUp 步骤中，使用了短暂密钥(EphemeralSecretKey)进行密钥切换
+6. ApplyEvaluationKey() 函数要求输入和输出的密文degree都必须是1
+7. 因此当尝试对degree=2的密文ctMul1执行Bootstrap时，触发了错误
+
+CKKS论文中的乘法公式(Algorithm 4: Multiply):
+  给定 ct=(c0,c1) 和 ct'=(c0',c1')，乘法结果为:
+    ct_mult = (d0, d1, d2)
+    其中:
+      d0 = c0*c0'
+      d1 = c0*c1' + c1*c0'
+      d2 = c1*c1'
+  此时degree变为2，需要重线性化来降低degree
+
+【修复方案】
+将 MulNew() 替换为 MulRelinNew()
+
+- MulNew(): 不带重线性化的乘法，degree会变成2
+- MulRelinNew(): 带重线性化的乘法，degree保持为1
+  重线性化将degree=2的密文(ct=(d0,d1,d2))转换为degree=1的密文(ct=(d0',d1'))
+  这是通过使用重线性化密钥(rlk)来实现的
+
+修复位置:
+- main.go 第470行附近: 将 ctMul1, _ := evaluatorBTP.MulNew(ctA, ctB)
+  替换为: ctMul1, _ := evaluatorBTP.MulRelinNew(ctA, ctB)
+
+- main.go 第487行附近: 将 ctMul2, _ := evaluatorBTP.MulNew(ctMul1BTP, ctB)
+  替换为: ctMul2, _ := evaluatorBTP.MulRelinNew(ctMul1BTP, ctB)
+
+【关键概念】
+- degree: 密文多项式的个数。原始密文degree=1，乘法后degree=2
+- relinearization: 重线性化，将degree=2的密文降回degree=1
+- Mul vs MulRelin:
+  - Mul: 不带重线性化，degree会累加
+  - MulRelin: 带重线性化，degree保持不变
+- ApplyEvaluationKey: 密钥切换操作，某些步骤(如ModUp的短暂密钥切换)要求degree=1
+
+================================================================================
+第二次问题分析与修复
+================================================================================
+
+【问题描述】
+在第[8]部分执行MulRelinNew时panic:
+  panic: level cannot be larger than max level
+
+错误堆栈显示问题发生在GadgetProduct函数中:
+  ring.Ring.AtLevel(...)  # level=1, max level=0
+  ring/ringqp.Ring.AtLevel(..., 0x1?, 0x3)  # level=1, maxLevelP=3
+  core/rlwe.Evaluator.GadgetProductLazy(...)
+
+【问题原因】
+参数和密钥的级别不匹配:
+
+1. paramsBTP (ResidualParameters):
+   - Q有2个素数(level 0和level 1)
+   - MaxLevel = 1
+   - P有1个素数
+   - MaxLevelP = 0
+
+2. btpParams.BootstrappingParameters:
+   - Q有更多素数(levels 0到16,共17个)
+   - MaxLevel = 16
+   - P有更多素数
+   - MaxLevelP = 3
+
+3. btpKeys (评估密钥):
+   - 是在btpParams.BootstrappingParameters上生成的
+   - 重线性化密钥rlk: 对应BootstrappingParameters的完整模数链
+   - Galois密钥gk: 对应BootstrappingParameters的完整模数链
+
+4. 尝试执行 evaluatorBTP.MulRelinNew(ctA, ctB):
+   - ctA和ctB是在paramsBTP上创建的(level=1)
+   - 但评估器(evaluatorBTP)使用了btpKeys
+   - MulRelinNew内部调用GadgetProduct时
+   - GadgetProduct尝试使用BootstrappingParameters的所有level
+   - 但密文只有paramsBTP的level信息
+   - 导致参数级别不匹配panic
+
+【修复方案】
+使用btpEvaluator的内部ckks.Evaluator,而不是创建新的评估器:
+
+将:
+  evaluatorBTP := ckks.NewEvaluator(paramsBTP, btpKeys)
+  ctMul1, _ := evaluatorBTP.MulRelinNew(ctA, ctB)
+替换为:
+  ctMul1, _ := btpEvaluator.Evaluator.MulRelinNew(ctA, ctB)
+
+原理:
+- btpEvaluator内部已经正确配置了BootstrappingParameters
+- btpEvaluator.Evaluator的ckks.Evaluator是使用BootstrappingParameters创建的
+- 因此它能够正确处理level=1的密文
+- 内部的重线性化和Rescale操作使用正确的参数级别
+
+修复位置:
+- main.go 第470-477行附近:
+  删除: evaluatorBTP := ckks.NewEvaluator(paramsBTP, btpKeys)
+  使用: ctMul1, _ := btpEvaluator.Evaluator.MulRelinNew(ctA, ctB)
+
+- main.go 第487行附近:
+  使用: ctMul2, _ := btpEvaluator.Evaluator.MulRelinNew(ctMul1BTP, ctB)
+
+- main.go Rescale调用也需要使用btpEvaluator.Evaluator:
+  btpEvaluator.Evaluator.Rescale(ctMul1, ctMul1)
+  btpEvaluator.Evaluator.Rescale(ctMul2, ctMul2)
+
+【Bootstrapping参数层级结构说明】
+Bootstrapping使用两层参数:
+1. ResidualParameters (残差参数/原始参数):
+   - 用于常规的同态运算
+   - CT在这里创建(level通常较低)
+   - 演示中paramsBTP.MaxLevel = 1
+
+2. BootstrappingParameters (Bootstrap电路参数):
+   - 用于Bootstrap操作
+   - 包含Bootstrap电路所需的额外模数链
+   - 演示中btpParams.BootstrappingParameters.MaxLevel = 16
+
+评估密钥btpKeys必须与Bootstrap操作兼容,
+因为Bootstrap内部使用这些密钥执行同态解密。
+当MulRelinNew需要使用btpKeys时,
+必须确保评估器也是用BootstrappingParameters创建的。
