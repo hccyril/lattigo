@@ -56,3 +56,4 @@ _testmain.go
 # my
 *.bak
 *.pdf
+.claude/
