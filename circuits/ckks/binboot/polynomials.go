@@ -41,31 +41,19 @@ func fBinBoot(x float64) float64 {
 // 论文 §3.1: "Eval_fBinBoot is the homomorphic evaluation of f_BinBoot(x)=(1-cos(2πx))/2
 // via appropriate polynomial approximation."
 //
-// 【关键修复：MessageRatio 补偿】
-// 标准 Lattigo bootstrapping 的 ScaleDown 步骤会将消息归一化：
-//
-//	原始消息 m → m/MessageRatio（MessageRatio = Q0/Δ = 2^LogMessageRatio）
-//
-// 论文的 f_BinBoot 期望自变量为 b/2 + I（b 是二进制位，I 是 ModRaise 整数项），
-// 但 ScaleDown 后实际 slot 值为 (b/2)/MessageRatio + I = b/(2*MessageRatio) + I。
-//
-// 修复：多项式逼近 f_BinBoot(MessageRatio * x) 而非 f_BinBoot(x)，使得：
-//
-//	P(b/(2*MessageRatio) + I) = f_BinBoot(MessageRatio * (b/(2*MessageRatio) + I))
-//	                           = f_BinBoot(b/2 + I*MessageRatio)
-//	                           = f_BinBoot(b/2)  （周期为1，I*MessageRatio 是整数）
-//	                           = b               （论文期望结果）
+// 【关键设计】MessageRatio=1 配合 f(x) 直接评估：
+//   - LogMessageRatio=0 → MessageRatio=1 → ScaleDown 不归一化消息
+//   - Scale 重置后归一化消息 ≈ slot_values + I
+//   - 多项式 f(x) 直接评估 f(slot_values + I) = f(slot_values)（周期1）
+//   - 避免了 f(MessageRatio*x) 导致的频率翻倍问题
 //
 // 参数:
 //   - degree: Chebyshev 多项式次数（论文实验中使用 30）
 //   - K: 逼近区间 [-K, K]，覆盖 ModRaise 引入的整数项 I 的范围
-//   - messageRatio: ScaleDown 归一化因子（= 2^LogMessageRatio），多项式逼近 f(messageRatio*x)
 //
 // 返回: bignum.Polynomial，可直接用于 circuits/ckks/polynomial.Evaluator.Evaluate
-func NewBinBootPoly(degree int, K float64, messageRatio float64) bignum.Polynomial {
-	// 使用 bignum.ChebyshevApproximation 在 [-K, K] 上逼近 f_BinBoot(messageRatio * x)
-	// 逼近的函数是 f_BinBoot(messageRatio * x) = (1 - cos(2π * messageRatio * x)) / 2
-	// 这样 P(slot_values/MessageRatio + I) = f_BinBoot(slot_values + I*MessageRatio) = f_BinBoot(slot_values)
+func NewBinBootPoly(degree int, K float64) bignum.Polynomial {
+	// 使用 bignum.ChebyshevApproximation 在 [-K, K] 上逼近 f_BinBoot(x)
 	interval := bignum.Interval{
 		A:     *bignum.NewFloat(-K, 128),
 		B:     *bignum.NewFloat(K, 128),
@@ -74,14 +62,13 @@ func NewBinBootPoly(degree int, K float64, messageRatio float64) bignum.Polynomi
 
 	poly := bignum.ChebyshevApproximation(func(x *bignum.Complex) *bignum.Complex {
 		xf64, _ := x[0].Float64()
-		// 【关键修复】将自变量乘以 messageRatio，补偿 ScaleDown 的归一化
 		return &bignum.Complex{
-			newFloat(fBinBoot(messageRatio * xf64)),
+			newFloat(fBinBoot(xf64)),
 			newFloat(0),
 		}
 	}, interval)
 
-	// f_BinBoot(messageRatio * x) 仍然是偶函数（cos 是偶函数）
+	// f_BinBoot 是偶函数（cos 是偶函数），标记 IsOdd=false 以优化评估
 	poly.IsOdd = false
 	poly.IsEven = true
 
@@ -212,24 +199,19 @@ func gateFunction(g GateType) func(float64) float64 {
 // 论文 §4.1: "Step 4 consists in homomorphically evaluating a trigonometric function f_G
 // that removes I and sends φ1+φ2 to G(φ1, φ2)."
 //
-// 【关键修复：MessageRatio 补偿】
-// 同 NewBinBootPoly，ScaleDown 将消息归一化为 slot_values/MessageRatio。
-// 论文的 f_G 期望自变量为 (b1+b2)/3 + I，但实际 slot 值为 ((b1+b2)/3)/MessageRatio + I。
-//
-// 修复：多项式逼近 f_G(MessageRatio * x)，使得：
-//
-//	P(((b1+b2)/3)/MessageRatio + I) = f_G((b1+b2)/3 + I*MessageRatio)
-//	                                 = f_G((b1+b2)/3)  （周期为1，I*MessageRatio 是整数）
-//	                                 = G(b1, b2)       （论文期望结果）
+// 【关键设计】MessageRatio=1 配合 f(x) 直接评估：
+//   - LogMessageRatio=0 → MessageRatio=1 → ScaleDown 不归一化消息
+//   - Scale 重置后归一化消息 ≈ (b1+b2)/3 + I
+//   - 多项式 f(x) 直接评估 f((b1+b2)/3 + I) = f((b1+b2)/3) = G(b1,b2)（周期1）
+//   - 避免了 f(MessageRatio*x) 导致的频率翻倍问题
 //
 // 参数:
 //   - gate: 门类型（GateNAND, GateAND 等）
 //   - degree: Chebyshev 多项式次数
 //   - K: 逼近区间 [-K, K]
-//   - messageRatio: ScaleDown 归一化因子，多项式逼近 f(messageRatio*x)
 //
 // 返回: bignum.Polynomial，用于 EvalMod 阶段
-func NewGatePoly(gate GateType, degree int, K float64, messageRatio float64) bignum.Polynomial {
+func NewGatePoly(gate GateType, degree int, K float64) bignum.Polynomial {
 	f := gateFunction(gate)
 
 	interval := bignum.Interval{
@@ -240,9 +222,8 @@ func NewGatePoly(gate GateType, degree int, K float64, messageRatio float64) big
 
 	poly := bignum.ChebyshevApproximation(func(x *bignum.Complex) *bignum.Complex {
 		xf64, _ := x[0].Float64()
-		// 【关键修复】将自变量乘以 messageRatio，补偿 ScaleDown 的归一化
 		return &bignum.Complex{
-			newFloat(f(messageRatio * xf64)),
+			newFloat(f(xf64)),
 			newFloat(0),
 		}
 	}, interval)

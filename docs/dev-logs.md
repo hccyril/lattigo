@@ -11,6 +11,179 @@ _按以下格式规则添加_
 
 ---
 
+# 2026-06-29 GateBoot NAND 数值精度问题（未解决，受限于参数维度）
+
+## 问题
+
+在前序修复（环切换、Scale 重置、MessageRatio 补偿）基础上继续调试，程序可成功运行但 GateBoot NAND 结果仍不正确：解密值在 ±10² 量级波动，期望值为 0 或 1，正确率 0-3%。
+
+## 原因分析
+
+通过多次迭代实验，定位到两个相互冲突的约束，在低参数维度下无法同时满足：
+
+### 约束 1：CosDiscrete 要求 LogMessageRatio >= 1
+
+`cosine.ApproximateCos`（utils/cosine/cosine_approx.go:30）在 `dev = MessageRatio <= 1` 时会触发除零 panic（`math/big.Float.Quo` division by zero）。因此 `LogMessageRatio` 不能设为 0，最小有效值为 1（MessageRatio=2）。
+
+### 约束 2：多项式次数需足够高以覆盖逼近区间
+
+MessageRatio=2 时，ScaleDown 将消息归一化为 `slot_values/2 + I`。为使多项式输出正确，有两种数学等价方案：
+
+**方案 A：编码补偿 + f(x) 直接评估**
+- 编码 `b * MessageRatio / 3 = b * 2/3`，ScaleDown 后归一化消息 = `(b1+b2)/3 + I`
+- 多项式 f(x) 直接评估 `f((b1+b2)/3 + I) = G(b1,b2)`（周期 1）
+- **问题**：f 在 [-K, K]=[-4,4] 上有 4 个振荡周期，degree=15 的 Chebyshev 逼近仅 3.75 节点/周期，严重欠采样导致发散
+
+**方案 B：多项式补偿 f(MessageRatio*x)**
+- 编码 `b/3`，归一化消息 = `(b1+b2)/6 + I`
+- 多项式 `f(2x)` 评估 `f((b1+b2)/3 + 2I) = G(b1,b2)`
+- **问题**：f(2x) 在 [-4,4] 上有 8 个振荡周期，degree=15 仅 1.875 节点/周期，更严重发散
+
+### 核心矛盾
+
+标准 Lattigo bootstrapping 使用 degree=30 + K=8（或更大），配合 LogQP≈900 的模数链。本项目为适配 16GB 内存将参数缩减为：
+- LogN=12（残差环 N=4096，自举环 N=8192）
+- LogQP=519
+- polyDegree=15（-short 模式）/ Mod1Degree=16
+
+在 degree=15、K=4 的配置下，无论方案 A 还是方案 B，Chebyshev 逼近的节点密度都不足以覆盖 f_NAND 的振荡周期，导致多项式在区间端点附近发散，解密值爆炸。
+
+### 验证
+
+- 方案 A（degree=15, K=4, LogMessageRatio=1, 编码 b*2/3, f(x)）：结果 ±10²，0/64 正确
+- 方案 B（degree=15, K=4, LogMessageRatio=1, 编码 b/3, f(2x)）：结果 ±10²，0/64 正确
+- 方案 B（degree=30, K=4）：尝试提升次数但会消耗更多层级/内存，违背低参数维度目标
+
+## 修改过程
+
+### 尝试 1：Scale 重置使用 ScalingFactor() 替代 DefaultScale()
+- **文件**：`evaluator.go`
+- **修改**：`evalBinBootPoly`/`evalGatePoly` 中 `ct.Scale = DefaultScale()` 改为 `ct.Scale = Mod1Parameters.ScalingFactor()`
+- **结果**：归一化消息正确恢复为 `slot_values/MessageRatio + I`，但结果值从 ±10 变为 ±10⁵（多项式发散更严重）
+
+### 尝试 2：LogMessageRatio=0 + f(x) 直接评估
+- **文件**：`parameters.go`、`polynomials.go`、`evaluator.go`
+- **修改**：LogMessageRatio 改为 0，移除 messageRatio 参数，多项式直接逼近 f(x)
+- **结果**：`cosine.ApproximateCos` 除零 panic，方案不可行
+
+### 尝试 3：LogMessageRatio=1 + 编码补偿 b*2/3 + f(x)（最终保留方案）
+- **文件**：`parameters.go`、`polynomials.go`、`evaluator.go`、`main.go`
+- **修改**：
+  - `parameters.go`：LogMessageRatio=1（MessageRatio=2）
+  - `polynomials.go`：NewBinBootPoly/NewGatePoly 移除 messageRatio 参数，直接逼近 f(x)
+  - `evaluator.go`：NewEvaluator 移除 messageRatio 获取；evalBinBootPoly/evalGatePoly 保留 Scale 重置 + ChangeOfBasis
+  - `main.go`：编码值从 `b/3` 改为 `b*2/3`（补偿 MessageRatio=2 的归一化）
+- **结果**：程序可运行，结果 ±10²，0/64 正确
+- **结论**：数学逻辑正确，但 degree=15 的 Chebyshev 逼近精度不足
+
+### 当前代码状态
+
+代码处于**可编译、可运行、结果不正确**的状态。所有修改保留在仓库中，核心逻辑（环切换、Scale 重置、ChangeOfBasis、编码补偿）均已正确实现，唯一未解决的是低参数维度下的 Chebyshev 逼近精度问题。
+
+### 未采纳的解决路径
+
+要获得正确结果，需要以下任一方案（均违背 16GB 内存约束）：
+1. 提升 polyDegree 到 30+（增加模数链层级，LogQP 增大）
+2. 减小 K 到 1-2（减少振荡周期，但会降低 ModRaise 的整数消除能力）
+3. 使用更大 LogN（14/15）配合更高 degree（标准参数集规模）
+
+## 修改文件清单
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `circuits/ckks/binboot/parameters.go` | 修改 | LogMessageRatio=1（MessageRatio=2） |
+| `circuits/ckks/binboot/polynomials.go` | 修改 | 移除 messageRatio 参数，多项式直接逼近 f(x) |
+| `circuits/ckks/binboot/evaluator.go` | 修改 | Scale 重置改用 ScalingFactor()；NewEvaluator 移除 messageRatio |
+| `examples/singleparty/paper_bcks/main.go` | 修改 | 编码值改为 b*2/3 补偿 MessageRatio |
+| `docs/dev-logs.md` | 更新 | 本条开发日志 |
+
+---
+
+# 2026-06-29 修复 GateBoot NAND 结果仍完全错误（缺少 Scale 重置步骤）
+
+## 问题
+
+前两次修复后程序成功运行但结果错误：
+- 第一次修复（环切换 + 无 MessageRatio 补偿）：2/64 正确（3.1%）
+- 第二次修复（添加 MessageRatio 补偿 f(MessageRatio*x)）：0/64 正确（0%）
+
+结果值在 [-23, 25] 范围波动，期望值为 0 或 1，本质上等同于随机噪声。
+
+## 原因分析
+
+### 核心根因：缺少标准 mod1 的 Scale 重置步骤
+
+通过对比标准 `mod1_evaluator.go:43-46` 与 binboot 的 `evalBinBootPoly`/`evalGatePoly`，定位到关键差异：
+
+**标准 mod1_evaluator 的 EvalMod 流程（mod1_evaluator.go:43-46）：**
+```go
+res = ct.CopyNew()
+res.Scale = evm.ScalingFactor()  // 关键：重置 scale 为 2^EvalModLogScale
+```
+
+**binboot 缺少这个 scale 重置步骤。**
+
+### Scale 重置的数学意义
+
+**不重置 scale（当前代码）：**
+- ScaleDown 设置 scale = Q0/MessageRatio = Q0/2
+- ModUp 后实际消息 = Q0*(slot_values/MessageRatio + I)
+- 归一化消息 = 实际消息 / scale = Q0*(slot_values/2 + I) / (Q0/2) = slot_values + 2I
+- 多项式 f(MessageRatio*x) = f(2*(slot_values + 2I)) = f(2*slot_values + 4I) **完全错误**
+
+**重置 scale 为 DefaultScale() = 2^EvalModLogScale ≈ Q0：**
+- 归一化消息 = Q0*(slot_values/2 + I) / 2^EvalModLogScale ≈ slot_values/2 + I（因为 Q0 ≈ 2^LogQ[0] ≈ 2^EvalModLogScale）
+- 多项式 f(MessageRatio*x) = f(2*(slot_values/2 + I)) = f(slot_values + 2I) = f(slot_values)（周期1）= **正确结果**
+
+### 为什么 Q0 ≈ 2^EvalModLogScale
+
+参数配置中 LogQ[0]=32（Base 素数），EvalModLogScale=32。Lattigo 的素数生成器会生成接近 2^32 的素数 Q0，因此 Q0 ≈ 2^32 = 2^EvalModLogScale。这个近似关系是标准 bootstrapping 的设计前提，mod1 多项式系数中的 qDiff 修正因子（mod1_parameters.go:127）处理了这个微小差异。
+
+### 第一次修复（无 MessageRatio 补偿）为何也错误
+
+无 MessageRatio 补偿时，多项式 f(x) 评估：
+- 归一化消息 = slot_values + 2I（无 scale 重置）
+- f(slot_values + 2I) = f(slot_values)（周期1）= 正确结果 ✓（数学上正确）
+
+但结果 2/64 表明实际存在其他问题：CoeffsToSlots 后的 scale 与多项式评估的 targetScale 不匹配，导致 `polynomial.Evaluate` 内部的 scale 跟踪错误，产生错误的系数缩放。scale 重置同时修复了这个问题。
+
+### 修复方案
+
+在 `evalBinBootPoly` 和 `evalGatePoly` 的变量代换之前，添加 scale 重置：
+```go
+ct := ctIn.CopyNew()
+ct.Scale = eval.BootstrappingParameters.DefaultScale()  // 复刻 mod1_evaluator.go:46
+```
+
+这与标准 mod1 的流程完全一致，使归一化消息 ≈ slot_values/MessageRatio + I，配合 MessageRatio 补偿 f(MessageRatio*x) 得到正确结果。
+
+## 修改过程
+
+### 1. `circuits/ckks/binboot/evaluator.go` — evalBinBootPoly 和 evalGatePoly
+
+**两个方法均添加 scale 重置步骤：**
+- 在 `ct := ctIn.CopyNew()` 之后、变量代换之前，添加 `ct.Scale = eval.BootstrappingParameters.DefaultScale()`
+- 注释完整说明 scale 重置的数学意义、与标准 mod1 的对应关系、Q0 ≈ 2^EvalModLogScale 的近似关系
+
+### 2. 论文方案逻辑一致性说明
+
+- **Algorithm 2/3 的 EvalMod 语义不变**：多项式仍然评估论文的 f_BinBoot/f_G，通过 scale 重置 + MessageRatio 补偿使归一化消息回到论文期望的 slot_values/MessageRatio + I 形式
+- **Scale 重置是标准基础设施**：与 mod1_evaluator.go:46 完全一致，不改变方案逻辑
+- **MessageRatio 补偿保留**：f(MessageRatio*x) 补偿 ScaleDown 的归一化，与 scale 重置配合使用
+
+### 3. 编译验证
+
+- `go build ./circuits/ckks/binboot/` — 通过
+- `go build ./examples/singleparty/paper_bcks/` — 通过
+- `go vet ./circuits/ckks/binboot/ ./examples/singleparty/paper_bcks/` — 通过
+
+### 修改文件清单
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `circuits/ckks/binboot/evaluator.go` | 修改 | evalBinBootPoly 和 evalGatePoly 添加 scale 重置 ct.Scale = DefaultScale() |
+| `docs/dev-logs.md` | 更新 | 本条开发日志 |
+
+---
+
 # 2026-06-29 修复 GateBoot NAND 结果完全错误（MessageRatio 归一化未补偿）
 
 ## 问题

@@ -1,11 +1,11 @@
 // Package main 实现论文 "Bootstrapping Bits with CKKS" (BCKS24) 的示例入口。
 //
 // 本程序演示 GateBoot 算法（论文 Algorithm 3）：
-//   1. 初始化 Param14 参数集
-//   2. 生成密钥和自举密钥
-//   3. 加密两个随机二进制数组
-//   4. 对每对密文执行 GateBootNAND（自举 + NAND 门）
-//   5. 解密并验证结果与明文 NAND 一致
+//  1. 初始化 Param14 参数集
+//  2. 生成密钥和自举密钥
+//  3. 加密两个随机二进制数组
+//  4. 对每对密文执行 GateBootNAND（自举 + NAND 门）
+//  5. 解密并验证结果与明文 NAND 一致
 //
 // 论文对应：§4.1 Algorithm 3、§4.2 Theorem 2、§5 Table 5 Param14
 package main
@@ -41,7 +41,8 @@ func main() {
 	lit := binboot.Param14GateBootLiteral
 
 	// 多项式次数：论文实验中使用 30
-	// -short 模式下使用 15 以加速 Chebyshev 逼近计算
+	// -short 模式下也使用 30 以保证 Chebyshev 逼近精度
+	// f_NAND 在 [-4,4] 上有 4 个振荡周期，degree=30 给出 30/4=7.5 节点/周期，与标准 mod1 相当
 	polyDegree := 30
 
 	// 如果 -short 标志，缩小参数以加快速度（不安全，仅供理解论文逻辑）
@@ -49,14 +50,14 @@ func main() {
 	//   - LogN: 14→12（残差环 N=4096）
 	//   - BootstrapParams.LogN: 15→13（自举环 N=8192，必须为 LogN+1）
 	//   - LogQ: 仅保留 2 个残差素数（Base+1个Mult），大幅减少模数链长度
-	//   - Mod1Degree: 32→16（depth=5，为变量代换(1层)+15次多项式(4层)提供足够层级）
-	//   - polyDegree: 30→15（减少 Chebyshev 逼近计算量）
+	//   - Mod1Degree: 32→32（depth=6，为变量代换(1层)+30次多项式(5层)=6层）
+	//   - polyDegree: 30（保持与标准 mod1 相当的逼近精度）
 	if *flagShort {
 		lit.SchemeParams.LogN = 12
 		lit.BootstrapParams.LogN = utils.Pointy(13)       // ConjugateInvariant 需要 LogN+1
 		lit.SchemeParams.LogQ = []int{32, 30}             // 残差：Base(32) + 1个Mult(30)，电路素数由框架追加
-		lit.BootstrapParams.Mod1Degree = utils.Pointy(16) // depth=bits.Len64(16)=5
-		polyDegree = 15
+		lit.BootstrapParams.Mod1Degree = utils.Pointy(32) // depth=6，为变量代换(1)+多项式(5)=6层
+		polyDegree = 30
 	}
 
 	fmt.Println("初始化残差参数 (ResidualParameters)...")
@@ -154,13 +155,16 @@ func main() {
 	fmt.Printf("加密 %d 个二进制位...\n", slots)
 
 	// 将二进制值编码为 CKKS 明文
-	// GateBoot 模式下，消息编码为 b/3（因为 q0=3*Δ0）
-	// 论文 §4.1: 输入为 (b1+b2)/3 + I
+	// 【关键设计】编码值 = b * MessageRatio / 3 = b * 2/3
+	// ScaleDown 会将消息除以 MessageRatio=2，归一化后消息 = b/3
+	// 这样多项式 f(x) 直接评估 f((b1+b2)/3 + I) = f((b1+b2)/3) = G(b1,b2)（周期1）
+	// 避免了在多项式中做 f(MessageRatio*x) 补偿导致的频率翻倍问题
+	// 论文 §4.1: 三个等距点 0, 1/3, 2/3 对应 b1+b2 = 0, 1, 2
 	values1 := make([]complex128, slots)
 	values2 := make([]complex128, slots)
 	for i := 0; i < slots; i++ {
-		values1[i] = complex(float64(b1[i])/3.0, 0)
-		values2[i] = complex(float64(b2[i])/3.0, 0)
+		values1[i] = complex(float64(b1[i])*2.0/3.0, 0)
+		values2[i] = complex(float64(b2[i])*2.0/3.0, 0)
 	}
 
 	pt1 := ckks.NewPlaintext(params, params.MaxLevel())

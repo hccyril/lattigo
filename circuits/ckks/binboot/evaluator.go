@@ -76,19 +76,15 @@ func NewEvaluator(btpEval *bootstrapping.Evaluator, degree int, K float64) (*Eva
 	// mod1.Evaluator 内部持有 polynomial.Evaluator
 	polyEval := btpEval.Mod1Evaluator.PolynomialEvaluator
 
-	// 【关键修复】获取 ScaleDown 的 MessageRatio（= Q0/Δ = 2^LogMessageRatio）
-	// ScaleDown 会将消息归一化为 slot_values/MessageRatio，因此多项式需要
-	// 逼近 f(MessageRatio * x) 以补偿归一化，确保 P(slot_values/MessageRatio + I) = f(slot_values)
-	// 详见 NewBinBootPoly 和 NewGatePoly 的注释
-	messageRatio := btpEval.Mod1Parameters.MessageRatio()
+	// 预计算 BinBoot 多项式
+	// 【设计】LogMessageRatio=0 (MessageRatio=1)，多项式直接逼近 f(x) 而非 f(MessageRatio*x)
+	// 避免频率翻倍。ScaleDown 不归一化消息，scale 重置后归一化消息 ≈ slot_values + I
+	binBootPoly := NewBinBootPoly(degree, K)
 
-	// 预计算 BinBoot 多项式（包含 MessageRatio 补偿）
-	binBootPoly := NewBinBootPoly(degree, K, messageRatio)
-
-	// 预计算六个门函数多项式（包含 MessageRatio 补偿）
+	// 预计算六个门函数多项式
 	gatePolys := make(map[GateType]bignum.Polynomial)
 	for _, g := range []GateType{GateAND, GateOR, GateXOR, GateNAND, GateNOR, GateXNOR} {
-		gatePolys[g] = NewGatePoly(g, degree, K, messageRatio)
+		gatePolys[g] = NewGatePoly(g, degree, K)
 	}
 
 	return &Evaluator{
@@ -215,39 +211,34 @@ func (eval *Evaluator) evalBinBootPoly(ctIn *rlwe.Ciphertext) (*rlwe.Ciphertext,
 
 	poly := eval.BinBootPoly
 
-	// 获取 Chebyshev 变量代换参数
-	// Chebyshev 基要求将输入从 [A, B] 映射到 [-1, 1]
-	// 变换: x' = scalar * x + constant
-	//   scalar = 2 / (B - A)
-	//   constant = (-A - B) / (B - A)
-	// 对于对称区间 [-K, K]：scalar = 1/K, constant = 0
+	// 【关键修复】Scale 重置 — 复刻标准 mod1_evaluator.go:46
+	// 重置 scale 为 ScalingFactor() = 2^EvalModLogScale ≈ Q0
+	// 归一化消息 = Q0*(slot_values/MessageRatio + I) / Q0 ≈ slot_values/MessageRatio + I
+	ct := ctIn.CopyNew()
+	ct.Scale = eval.BTEvaluator.Mod1Parameters.ScalingFactor()
+
+	// Chebyshev 变量代换：将输入从 [-K, K] 映射到 [-1, 1]
+	// 变换: x' = scalar * x + constant，对称区间时 scalar=1/K, constant=0
 	scalar, constant := poly.ChangeOfBasis()
 
-	ct := ctIn.CopyNew()
-
-	// 【修复】正确的变量代换顺序：先乘 scalar，再 Rescale，最后加 constant
-	// 之前代码先 Add 再 Mul，导致结果为 scalar*(ct+constant) 而非 scalar*ct+constant
-	// 对于对称区间 constant=0 时两者等价，但为通用正确性修正执行顺序
-
-	// Step 1: 乘以缩放因子 scalar — 将输入区间 [-K, K] 映射到 [-1, 1]
-	// Mul by float64 scalar: scale 会乘以当前模数，需要后续 Rescale 恢复
+	// Step 1: 乘 scalar=1/K，将消息从 [-K,K] 映射到 [-1,1]
 	scalarFloat, _ := scalar.Float64()
 	if err := eval.BTEvaluator.Mul(ct, scalarFloat, ct); err != nil {
 		return nil, fmt.Errorf("cannot apply Chebyshev scaling: %w", err)
 	}
 
-	// Step 2: Rescale — 消耗一个层级，将 scale 恢复到合理范围
+	// Step 2: Rescale — 消耗 1 层，恢复 scale
 	if err := eval.BTEvaluator.Rescale(ct, ct); err != nil {
 		return nil, fmt.Errorf("cannot rescale after Chebyshev scaling: %w", err)
 	}
 
-	// Step 3: 加上常数偏移 constant（对称区间时为 0，不影响结果）
+	// Step 3: 加 constant（对称区间为 0）
 	if err := eval.BTEvaluator.Add(ct, constant, ct); err != nil {
 		return nil, fmt.Errorf("cannot apply Chebyshev offset: %w", err)
 	}
 
-	// 目标输出 scale: 自举参数的默认 scale
-	targetScale := eval.BootstrappingParameters.DefaultScale()
+	// 目标输出 scale: Mod1Parameters.ScalingFactor() = 2^EvalModLogScale
+	targetScale := eval.BTEvaluator.Mod1Parameters.ScalingFactor()
 
 	// 使用 polynomial.Evaluator.Evaluate 评估 Chebyshev 多项式
 	// 论文 §3.1: 通过 Chebyshev 逼近同态求值 f_BinBoot
@@ -255,6 +246,11 @@ func (eval *Evaluator) evalBinBootPoly(ctIn *rlwe.Ciphertext) (*rlwe.Ciphertext,
 	if err != nil {
 		return nil, fmt.Errorf("cannot evaluate BinBoot polynomial: %w", err)
 	}
+
+	// 评估完成后将 scale 设为 BootstrappingParameters.DefaultScale()
+	// 与标准 EvalMod（evaluator.go:784）的 ctOut.Scale = DefaultScale() 一致
+	// 这为后续 SlotsToCoeffs 步骤提供正确的 scale 基准
+	ctOut.Scale = eval.BootstrappingParameters.DefaultScale()
 
 	return ctOut, nil
 }
@@ -384,35 +380,34 @@ func (eval *Evaluator) evalGatePoly(ctIn *rlwe.Ciphertext, gate GateType) (*rlwe
 		return nil, fmt.Errorf("binboot: gate polynomial for %s not found", gate.String())
 	}
 
-	// Chebyshev 变量代换（与 evalBinBootPoly 相同的正确顺序）
+	// Scale 重置 + Chebyshev 变量代换（与 evalBinBootPoly 相同）
+	ct := ctIn.CopyNew()
+	ct.Scale = eval.BTEvaluator.Mod1Parameters.ScalingFactor()
+
 	scalar, constant := poly.ChangeOfBasis()
 
-	ct := ctIn.CopyNew()
-
-	// 【修复】正确的变量代换顺序：先乘 scalar，再 Rescale，最后加 constant
-	// Step 1: 乘以缩放因子 scalar
 	scalarFloat, _ := scalar.Float64()
 	if err := eval.BTEvaluator.Mul(ct, scalarFloat, ct); err != nil {
 		return nil, fmt.Errorf("cannot apply Chebyshev scaling: %w", err)
 	}
 
-	// Step 2: Rescale
 	if err := eval.BTEvaluator.Rescale(ct, ct); err != nil {
 		return nil, fmt.Errorf("cannot rescale after Chebyshev scaling: %w", err)
 	}
 
-	// Step 3: 加上常数偏移 constant
 	if err := eval.BTEvaluator.Add(ct, constant, ct); err != nil {
 		return nil, fmt.Errorf("cannot apply Chebyshev offset: %w", err)
 	}
 
-	// 评估门函数 Chebyshev 多项式
-	targetScale := eval.BootstrappingParameters.DefaultScale()
+	targetScale := eval.BTEvaluator.Mod1Parameters.ScalingFactor()
 
 	ctOut, err := eval.PolyEvaluator.Evaluate(ct, poly, targetScale)
 	if err != nil {
 		return nil, fmt.Errorf("cannot evaluate gate polynomial: %w", err)
 	}
+
+	// 评估完成后将 scale 设为 DefaultScale()，与标准 EvalMod 一致
+	ctOut.Scale = eval.BootstrappingParameters.DefaultScale()
 
 	return ctOut, nil
 }

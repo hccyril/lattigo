@@ -42,8 +42,9 @@ import (
 //   - 密集密钥 Hamming weight h = 256
 //
 // 【修复】LogQ 仅包含残差素数（Base + Mult 层级），自举电路素数（StC/EvalMod/CtS）
-//   由 bootstrapping.NewParametersFromLiteral 根据因式分解深度自动追加。
-//   之前误将电路素数写入 LogQ，导致模数链翻倍（LogQP≈910 而非≈460）。
+//
+//	由 bootstrapping.NewParametersFromLiteral 根据因式分解深度自动追加。
+//	之前误将电路素数写入 LogQ，导致模数链翻倍（LogQP≈910 而非≈460）。
 //
 // 【修复】Mod1Degree=32 提供 6 个 EvalMod 层级：
 //   - Chebyshev 变量代换（Mul+Rescale）消耗 1 层
@@ -70,7 +71,7 @@ var Param14BinBootLiteral = struct {
 	BootstrapParams: bootstrapping.ParametersLiteral{
 		LogN:                  utils.Pointy(15), // 【修复】必须为残差 LogN+1（ConjugateInvariant 框架约束）
 		EphemeralSecretWeight: utils.Pointy(32), // h~ = 32（sparse）
-		LogMessageRatio:       utils.Pointy(1),  // q0/Δ0 = 2 → log2(2)=1
+		LogMessageRatio:       utils.Pointy(1),  // MessageRatio=2，CosDiscrete 要求 dev>1
 		Mod1Type:              0,                // CosDiscrete，将在 evaluator 中被自定义多项式覆盖
 		Mod1Degree:            utils.Pointy(32), // 【修复】depth=6，为变量代换(1层)+多项式(5层)提供足够层级
 		DoubleAngle:           utils.Pointy(0),  // BinBoot 不使用 double-angle
@@ -114,7 +115,7 @@ var Param14GateBootLiteral = struct {
 	BootstrapParams: bootstrapping.ParametersLiteral{
 		LogN:                  utils.Pointy(15), // 【修复】必须为残差 LogN+1
 		EphemeralSecretWeight: utils.Pointy(32),
-		LogMessageRatio:       utils.Pointy(1), // q0/Δ0 ≈ 3，取 log2 后用 1（ratio=2，三角函数周期性保证正确性）
+		LogMessageRatio:       utils.Pointy(1), // MessageRatio=2，CosDiscrete 要求 dev>1
 		Mod1Type:              0,
 		Mod1Degree:            utils.Pointy(32), // 【修复】depth=6
 		DoubleAngle:           utils.Pointy(0),
