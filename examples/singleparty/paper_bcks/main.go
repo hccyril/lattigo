@@ -40,10 +40,23 @@ func main() {
 	// 论文 §4.1: q0 = 3*Δ0
 	lit := binboot.Param14GateBootLiteral
 
-	// 如果 -short 标志，缩小 N 以加快速度
+	// 多项式次数：论文实验中使用 30
+	// -short 模式下使用 15 以加速 Chebyshev 逼近计算
+	polyDegree := 30
+
+	// 如果 -short 标志，缩小参数以加快速度（不安全，仅供理解论文逻辑）
+	// 【修复】完整覆盖所有需要调整的参数字段：
+	//   - LogN: 14→12（残差环 N=4096）
+	//   - BootstrapParams.LogN: 15→13（自举环 N=8192，必须为 LogN+1）
+	//   - LogQ: 仅保留 2 个残差素数（Base+1个Mult），大幅减少模数链长度
+	//   - Mod1Degree: 32→16（depth=5，为变量代换(1层)+15次多项式(4层)提供足够层级）
+	//   - polyDegree: 30→15（减少 Chebyshev 逼近计算量）
 	if *flagShort {
 		lit.SchemeParams.LogN = 12
-		lit.BootstrapParams.LogN = utils.Pointy(13) // ConjugateInvariant 需要 LogN+1
+		lit.BootstrapParams.LogN = utils.Pointy(13)       // ConjugateInvariant 需要 LogN+1
+		lit.SchemeParams.LogQ = []int{32, 30}             // 残差：Base(32) + 1个Mult(30)，电路素数由框架追加
+		lit.BootstrapParams.Mod1Degree = utils.Pointy(16) // depth=bits.Len64(16)=5
+		polyDegree = 15
 	}
 
 	fmt.Println("初始化残差参数 (ResidualParameters)...")
@@ -113,7 +126,8 @@ func main() {
 
 	fmt.Println("创建 BinBoot/GateBoot 评估器...")
 	// 论文 §3.1: degree=30, K=4
-	binbootEval, err := binboot.NewEvaluator(btpEval, 30, 4)
+	// -short 模式下 polyDegree=15（已在参数初始化阶段设置）
+	binbootEval, err := binboot.NewEvaluator(btpEval, polyDegree, 4)
 	if err != nil {
 		panic(fmt.Errorf("cannot create binboot evaluator: %w", err))
 	}

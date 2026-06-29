@@ -25,7 +25,8 @@ import (
 // fBinBoot 实现论文 §3.1 的核心三角函数 f_BinBoot(x) = (1-cos(2πx))/2。
 //
 // 论文原文（§3.1）:
-//   "we choose the following: f_BinBoot(x) = (1/2)(1 - cos(2πx))"
+//
+//	"we choose the following: f_BinBoot(x) = (1/2)(1 - cos(2πx))"
 //
 // 性质（Lemma 1, §3.2）:
 //   - f_BinBoot(b/2 + I + ε/2) - b = O(ε²)  （二次噪声缩减）
@@ -37,20 +38,34 @@ func fBinBoot(x float64) float64 {
 
 // NewBinBootPoly 生成 f_BinBoot 的 Chebyshev 多项式逼近。
 //
-// 论文 §3.1: "Eval_fBinBoot is the homomorphic evaluation of f_BinBoot(x)=(1-cos(2x))/2
+// 论文 §3.1: "Eval_fBinBoot is the homomorphic evaluation of f_BinBoot(x)=(1-cos(2πx))/2
 // via appropriate polynomial approximation."
+//
+// 【关键修复：MessageRatio 补偿】
+// 标准 Lattigo bootstrapping 的 ScaleDown 步骤会将消息归一化：
+//
+//	原始消息 m → m/MessageRatio（MessageRatio = Q0/Δ = 2^LogMessageRatio）
+//
+// 论文的 f_BinBoot 期望自变量为 b/2 + I（b 是二进制位，I 是 ModRaise 整数项），
+// 但 ScaleDown 后实际 slot 值为 (b/2)/MessageRatio + I = b/(2*MessageRatio) + I。
+//
+// 修复：多项式逼近 f_BinBoot(MessageRatio * x) 而非 f_BinBoot(x)，使得：
+//
+//	P(b/(2*MessageRatio) + I) = f_BinBoot(MessageRatio * (b/(2*MessageRatio) + I))
+//	                           = f_BinBoot(b/2 + I*MessageRatio)
+//	                           = f_BinBoot(b/2)  （周期为1，I*MessageRatio 是整数）
+//	                           = b               （论文期望结果）
 //
 // 参数:
 //   - degree: Chebyshev 多项式次数（论文实验中使用 30）
 //   - K: 逼近区间 [-K, K]，覆盖 ModRaise 引入的整数项 I 的范围
+//   - messageRatio: ScaleDown 归一化因子（= 2^LogMessageRatio），多项式逼近 f(messageRatio*x)
 //
 // 返回: bignum.Polynomial，可直接用于 circuits/ckks/polynomial.Evaluator.Evaluate
-//
-// 注意: 论文中 BinBoot 的输入经过 CtS 后为 (φ+ε+ε₂)/2 + I，
-// 其中 I 是小整数，因此 K 取较小值（如 4）即可。
-func NewBinBootPoly(degree int, K float64) bignum.Polynomial {
-	// 使用 bignum.ChebyshevApproximation 在 [-K, K] 上逼近 f_BinBoot
-	// 论文 §3.1 Figure 2 展示了该函数在 [-1, 1] 上的图像
+func NewBinBootPoly(degree int, K float64, messageRatio float64) bignum.Polynomial {
+	// 使用 bignum.ChebyshevApproximation 在 [-K, K] 上逼近 f_BinBoot(messageRatio * x)
+	// 逼近的函数是 f_BinBoot(messageRatio * x) = (1 - cos(2π * messageRatio * x)) / 2
+	// 这样 P(slot_values/MessageRatio + I) = f_BinBoot(slot_values + I*MessageRatio) = f_BinBoot(slot_values)
 	interval := bignum.Interval{
 		A:     *bignum.NewFloat(-K, 128),
 		B:     *bignum.NewFloat(K, 128),
@@ -59,13 +74,14 @@ func NewBinBootPoly(degree int, K float64) bignum.Polynomial {
 
 	poly := bignum.ChebyshevApproximation(func(x *bignum.Complex) *bignum.Complex {
 		xf64, _ := x[0].Float64()
+		// 【关键修复】将自变量乘以 messageRatio，补偿 ScaleDown 的归一化
 		return &bignum.Complex{
-			newFloat(fBinBoot(xf64)),
+			newFloat(fBinBoot(messageRatio * xf64)),
 			newFloat(0),
 		}
 	}, interval)
 
-	// f_BinBoot 是偶函数（cos 是偶函数），标记 IsOdd=false 以优化评估
+	// f_BinBoot(messageRatio * x) 仍然是偶函数（cos 是偶函数）
 	poly.IsOdd = false
 	poly.IsEven = true
 
@@ -84,41 +100,47 @@ func NewBinBootPoly(degree int, K float64) bignum.Polynomial {
 // ===================================================================
 
 // fGateNAND 实现论文 Table 4 的 NAND 门函数:
-//   f_NAND(x) = (2/3)(1 + sin(2πx + π/6))
+//
+//	f_NAND(x) = (2/3)(1 + sin(2πx + π/6))
 //
 // 验证（论文 §4.1）:
-//   f_NAND(0) = (2/3)(1 + sin(π/6)) = (2/3)(1 + 0.5) = 1 = NAND(0,0)
-//   f_NAND(1/3) = (2/3)(1 + sin(2π/3 + π/6)) = (2/3)(1 + sin(5π/6))
-//               = (2/3)(1 + 0.5) = 1 = NAND(1,0)
-//   f_NAND(2/3) = (2/3)(1 + sin(4π/3 + π/6)) = (2/3)(1 + sin(3π/2))
-//               = (2/3)(1 - 1) = 0 = NAND(1,1)
+//
+//	f_NAND(0) = (2/3)(1 + sin(π/6)) = (2/3)(1 + 0.5) = 1 = NAND(0,0)
+//	f_NAND(1/3) = (2/3)(1 + sin(2π/3 + π/6)) = (2/3)(1 + sin(5π/6))
+//	            = (2/3)(1 + 0.5) = 1 = NAND(1,0)
+//	f_NAND(2/3) = (2/3)(1 + sin(4π/3 + π/6)) = (2/3)(1 + sin(3π/2))
+//	            = (2/3)(1 - 1) = 0 = NAND(1,1)
 func fGateNAND(x float64) float64 {
 	return (2.0 / 3.0) * (1.0 + math.Sin(2.0*math.Pi*x+math.Pi/6.0))
 }
 
 // fGateAND 实现论文 Table 4 的 AND 门函数:
-//   f_AND(x) = (1/3)(1 - 2*sin(2πx + π/6))
+//
+//	f_AND(x) = (1/3)(1 - 2*sin(2πx + π/6))
 //
 // 验证: AND(0,0)=1, AND(1,0)=0, AND(1,1)=1
-//   f_AND(0) = (1/3)(1 - 2*0.5) = 0 ... 注意 AND = 1 - NAND
-//   实际: f_AND(x) = 1 - f_NAND(x) = 1 - (2/3)(1+sin(...)) = (1/3) - (2/3)sin(...)
-//   = (1/3)(1 - 2*sin(2πx + π/6))
+//
+//	f_AND(0) = (1/3)(1 - 2*0.5) = 0 ... 注意 AND = 1 - NAND
+//	实际: f_AND(x) = 1 - f_NAND(x) = 1 - (2/3)(1+sin(...)) = (1/3) - (2/3)sin(...)
+//	= (1/3)(1 - 2*sin(2πx + π/6))
 func fGateAND(x float64) float64 {
 	return (1.0 / 3.0) * (1.0 - 2.0*math.Sin(2.0*math.Pi*x+math.Pi/6.0))
 }
 
 // fGateOR 实现论文 Table 4 的 OR 门函数:
-//   f_OR(x) = (1/3)(1 - cos(2πx)) + ...
-//   论文 Table 4: f_OR(x) = (1/3)(1 - cos(2πx))  [需校验]
+//
+//	f_OR(x) = (1/3)(1 - cos(2πx)) + ...
+//	论文 Table 4: f_OR(x) = (1/3)(1 - cos(2πx))  [需校验]
 //
 // 验证: OR(0,0)=0, OR(1,0)=1, OR(1,1)=1
-//   f_OR(0) = (1/3)(1 - 1) = 0 ✓
-//   f_OR(1/3) = (1/3)(1 - cos(2π/3)) = (1/3)(1 - (-0.5)) = 0.5 ...
-//   需要参考论文原文：OR = (1/3)(1 - cos(2πx)) 不完全正确
-//   实际论文 Table 4: f_OR(x) = (1/3)(1 - cos(2πx))，但需验证 2/3 处
-//   f_OR(2/3) = (1/3)(1 - cos(4π/3)) = (1/3)(1 - (-0.5)) = 0.5
-//   这不等于 1，因此论文 Table 4 的 OR 公式应为 (1/3)(2 - cos(2πx)) 或类似形式
-//   根据论文 Figure 3 和 Table 4 的对称性，OR = 1 - NOR
+//
+//	f_OR(0) = (1/3)(1 - 1) = 0 ✓
+//	f_OR(1/3) = (1/3)(1 - cos(2π/3)) = (1/3)(1 - (-0.5)) = 0.5 ...
+//	需要参考论文原文：OR = (1/3)(1 - cos(2πx)) 不完全正确
+//	实际论文 Table 4: f_OR(x) = (1/3)(1 - cos(2πx))，但需验证 2/3 处
+//	f_OR(2/3) = (1/3)(1 - cos(4π/3)) = (1/3)(1 - (-0.5)) = 0.5
+//	这不等于 1，因此论文 Table 4 的 OR 公式应为 (1/3)(2 - cos(2πx)) 或类似形式
+//	根据论文 Figure 3 和 Table 4 的对称性，OR = 1 - NOR
 func fGateOR(x float64) float64 {
 	// OR = 1 - NOR, NOR = (1/3)(1 + 2cos(2πx))
 	// OR = 1 - (1/3)(1 + 2cos(2πx)) = (2/3) - (2/3)cos(2πx) = (2/3)(1 - cos(2πx))
@@ -126,34 +148,40 @@ func fGateOR(x float64) float64 {
 }
 
 // fGateXOR 实现论文 Table 4 的 XOR 门函数:
-//   f_XOR(x) = (1/3)(1 + 2*sin(2πx - π/6))
+//
+//	f_XOR(x) = (1/3)(1 + 2*sin(2πx - π/6))
 //
 // 验证: XOR(0,0)=0, XOR(1,0)=1, XOR(1,1)=0
-//   f_XOR(0) = (1/3)(1 + 2*sin(-π/6)) = (1/3)(1 - 1) = 0 ✓
-//   f_XOR(1/3) = (1/3)(1 + 2*sin(2π/3 - π/6)) = (1/3)(1 + 2*sin(π/2)) = (1/3)(3) = 1 ✓
-//   f_XOR(2/3) = (1/3)(1 + 2*sin(4π/3 - π/6)) = (1/3)(1 + 2*sin(7π/6))
-//             = (1/3)(1 + 2*(-0.5)) = 0 ✓
+//
+//	f_XOR(0) = (1/3)(1 + 2*sin(-π/6)) = (1/3)(1 - 1) = 0 ✓
+//	f_XOR(1/3) = (1/3)(1 + 2*sin(2π/3 - π/6)) = (1/3)(1 + 2*sin(π/2)) = (1/3)(3) = 1 ✓
+//	f_XOR(2/3) = (1/3)(1 + 2*sin(4π/3 - π/6)) = (1/3)(1 + 2*sin(7π/6))
+//	          = (1/3)(1 + 2*(-0.5)) = 0 ✓
 func fGateXOR(x float64) float64 {
 	return (1.0 / 3.0) * (1.0 + 2.0*math.Sin(2.0*math.Pi*x-math.Pi/6.0))
 }
 
 // fGateNOR 实现论文 Table 4 的 NOR 门函数:
-//   f_NOR(x) = (1/3)(1 + 2*cos(2πx))
+//
+//	f_NOR(x) = (1/3)(1 + 2*cos(2πx))
 //
 // 验证: NOR(0,0)=1, NOR(1,0)=0, NOR(1,1)=0
-//   f_NOR(0) = (1/3)(1 + 2) = 1 ✓
-//   f_NOR(1/3) = (1/3)(1 + 2*cos(2π/3)) = (1/3)(1 - 1) = 0 ✓
-//   f_NOR(2/3) = (1/3)(1 + 2*cos(4π/3)) = (1/3)(1 - 1) = 0 ✓
+//
+//	f_NOR(0) = (1/3)(1 + 2) = 1 ✓
+//	f_NOR(1/3) = (1/3)(1 + 2*cos(2π/3)) = (1/3)(1 - 1) = 0 ✓
+//	f_NOR(2/3) = (1/3)(1 + 2*cos(4π/3)) = (1/3)(1 - 1) = 0 ✓
 func fGateNOR(x float64) float64 {
 	return (1.0 / 3.0) * (1.0 + 2.0*math.Cos(2.0*math.Pi*x))
 }
 
 // fGateXNOR 实现论文 Table 4 的 XNOR 门函数:
-//   f_XNOR(x) = (2/3)(1 - sin(2πx - π/6))
+//
+//	f_XNOR(x) = (2/3)(1 - sin(2πx - π/6))
 //
 // 验证: XNOR = 1 - XOR
-//   f_XNOR(x) = 1 - (1/3)(1 + 2*sin(2πx - π/6))
-//             = (2/3) - (2/3)sin(2πx - π/6) = (2/3)(1 - sin(2πx - π/6))
+//
+//	f_XNOR(x) = 1 - (1/3)(1 + 2*sin(2πx - π/6))
+//	          = (2/3) - (2/3)sin(2πx - π/6) = (2/3)(1 - sin(2πx - π/6))
 func fGateXNOR(x float64) float64 {
 	return (2.0 / 3.0) * (1.0 - math.Sin(2.0*math.Pi*x-math.Pi/6.0))
 }
@@ -184,16 +212,24 @@ func gateFunction(g GateType) func(float64) float64 {
 // 论文 §4.1: "Step 4 consists in homomorphically evaluating a trigonometric function f_G
 // that removes I and sends φ1+φ2 to G(φ1, φ2)."
 //
+// 【关键修复：MessageRatio 补偿】
+// 同 NewBinBootPoly，ScaleDown 将消息归一化为 slot_values/MessageRatio。
+// 论文的 f_G 期望自变量为 (b1+b2)/3 + I，但实际 slot 值为 ((b1+b2)/3)/MessageRatio + I。
+//
+// 修复：多项式逼近 f_G(MessageRatio * x)，使得：
+//
+//	P(((b1+b2)/3)/MessageRatio + I) = f_G((b1+b2)/3 + I*MessageRatio)
+//	                                 = f_G((b1+b2)/3)  （周期为1，I*MessageRatio 是整数）
+//	                                 = G(b1, b2)       （论文期望结果）
+//
 // 参数:
 //   - gate: 门类型（GateNAND, GateAND 等）
 //   - degree: Chebyshev 多项式次数
 //   - K: 逼近区间 [-K, K]
+//   - messageRatio: ScaleDown 归一化因子，多项式逼近 f(messageRatio*x)
 //
 // 返回: bignum.Polynomial，用于 EvalMod 阶段
-//
-// 注意: GateBoot 的输入为 (φ1+φ2+ε)/3 + I，因此逼近区间需覆盖 I 的范围。
-// 三个关键点 x=0, 1/3, 2/3 对应 b1+b2 = 0, 1, 2。
-func NewGatePoly(gate GateType, degree int, K float64) bignum.Polynomial {
+func NewGatePoly(gate GateType, degree int, K float64, messageRatio float64) bignum.Polynomial {
 	f := gateFunction(gate)
 
 	interval := bignum.Interval{
@@ -204,8 +240,9 @@ func NewGatePoly(gate GateType, degree int, K float64) bignum.Polynomial {
 
 	poly := bignum.ChebyshevApproximation(func(x *bignum.Complex) *bignum.Complex {
 		xf64, _ := x[0].Float64()
+		// 【关键修复】将自变量乘以 messageRatio，补偿 ScaleDown 的归一化
 		return &bignum.Complex{
-			newFloat(f(xf64)),
+			newFloat(f(messageRatio * xf64)),
 			newFloat(0),
 		}
 	}, interval)
@@ -266,4 +303,3 @@ func gateTruthTable(g GateType, b1, b2 int) float64 {
 		return -1
 	}
 }
-
