@@ -55,3 +55,6 @@ _testmain.go
 
 # backup
 *.bak
+
+# agent
+.claude/

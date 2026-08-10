@@ -343,21 +343,33 @@ func main() {
 	// }
 
 	// -------------------------------------------------------------------------
-	// 第七部分: Bootstrapping操作
+	// 第七部分: Bootstrapping + 同态A*B*B
 	// -------------------------------------------------------------------------
-	fmt.Println("\n[7] Bootstrapping操作")
+	// 本部分使用同样的valuesA和valuesB，在新的参数集下演示:
+	// 1. 加密A和B
+	// 2. 执行第一次乘法 A*B (消耗level)
+	// 3. Bootstrap恢复level
+	// 4. 执行第二次乘法 (A*B)*B
+	// 5. 验证结果 = A*B*B
+	fmt.Println("\n[7] Bootstrapping + 同态 A*B*B")
 	fmt.Println("----------------------------------------")
-
-	// 创建新的参数用于演示Bootstrapping
-	// 为了演示, 我们需要一个有足够深度的参数集来进行bootstrapping
 	fmt.Println("  设置Bootstrapping参数...")
 
-	// 使用较小的参数以加快演示速度
-	// 这些参数只用于演示Bootstrapping的概念
+	// Bootstrapping需要独立的参数集:
+	// - ResidualParameters: 用户实际计算使用的参数(决定Bootstrap输出level)
+	// - BootstrappingParameters: Bootstrap电路内部使用的参数(需要更多levels)
+	//
+	// 关键: ResidualParameters的MaxLevel决定了Bootstrap能恢复到的最高level
+	// 这里设置LogQ有4个素数, MaxLevel=3, 这样:
+	//   - 初始密文在level=3
+	//   - MulRelin+Rescale后 → level=2
+	//   - 再次MulRelin+Rescale后 → level=1
+	//   - 如果继续乘法+Rescale → level=0 (耗尽)
+	//   - Bootstrap可以从level=0恢复到level=3
 	schemeParams := ckks.ParametersLiteral{
 		LogN:            10,
-		LogQ:            []int{50, 45}, // 只有2个level: level=0 和 level=1
-		LogP:            []int{45},
+		LogQ:            []int{50, 40, 40, 40}, // 4个素数, MaxLevel=3
+		LogP:            []int{51},
 		LogDefaultScale: 40,
 	}
 
@@ -368,26 +380,22 @@ func main() {
 	}
 
 	// 创建Bootstrapping参数
-	// Bootstrapping是重置同态计算能力的技术
-	// 详见论文: Cheon et al. (2017), Handcock et al. (2019)
 	btpParamsLit := bootstrapping.ParametersLiteral{}
-
-	// 设置bootstrapping的环度为与scheme参数相同
 	btpParamsLit.LogN = utils.Pointy(paramsBTP.LogN())
 
-	// 创建Bootstrapping参数
 	btpParams, err := bootstrapping.NewParametersFromLiteral(paramsBTP, btpParamsLit)
 	if err != nil {
 		fmt.Printf("错误: 创建Bootstrapping参数失败: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("  原始参数: LogN=%d, MaxLevel=%d\n", paramsBTP.LogN(), paramsBTP.MaxLevel())
-	fmt.Printf("  Bootstrapping参数: LogN=%d, MaxLevel=%d\n",
+	fmt.Printf("  ResidualParameters: LogN=%d, MaxLevel=%d\n", paramsBTP.LogN(), paramsBTP.MaxLevel())
+	fmt.Printf("  BootstrappingParameters: LogN=%d, MaxLevel=%d\n",
 		btpParams.BootstrappingParameters.LogN(), btpParams.BootstrappingParameters.MaxLevel())
-	fmt.Printf("  Bootstrapping电路深度: %d\n", btpParams.Depth())
+	fmt.Printf("  Bootstrap电路深度: %d\n", btpParams.Depth())
+	fmt.Printf("  Bootstrap输出level: %d (由ResidualParameters.MaxLevel决定)\n", paramsBTP.MaxLevel())
 
-	// 生成Bootstrapping所需的密钥
+	// 生成密钥
 	fmt.Println("  生成Bootstrapping密钥...")
 	sk := rlwe.NewKeyGenerator(btpParams.BootstrappingParameters).GenSecretKeyNew()
 	btpKeys, _, err := btpParams.GenEvaluationKeys(sk)
@@ -403,114 +411,89 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 为演示创建新的明文和密文
+	// 使用同样的valuesA和valuesB, 在新参数集下加密
+	// 注意: 由于Bootstrapping使用独立的密钥体系, 需要重新加密相同的数据
 	encoderBTP := ckks.NewEncoder(paramsBTP)
 	encryptorBTP := ckks.NewEncryptor(paramsBTP, sk)
 	decryptorBTP := ckks.NewDecryptor(paramsBTP, sk)
 
-	// 创建用于Bootstrapping测试的值
-	btpValuesA := make([]complex128, PlaintextSize)
-	btpValuesB := make([]complex128, PlaintextSize)
-	for i := range btpValuesA {
-		btpValuesA[i] = complex(float64(i+1)*0.1, float64(i+1)*0.05)
-		btpValuesB[i] = complex(float64(i+1)*0.2, float64(i+1)*0.1)
-	}
+	fmt.Printf("\n  使用同样的明文向量:\n")
+	fmt.Printf("    A: %v\n", formatComplexSlice(valuesA))
+	fmt.Printf("    B: %v\n", formatComplexSlice(valuesB))
 
-	ptBTP := ckks.NewPlaintext(paramsBTP, 0) // 从level=0开始
-	encoderBTP.Encode(btpValuesA, ptBTP)
-	ctBTP, _ := encryptorBTP.EncryptNew(ptBTP)
-
-	fmt.Printf("  原始值A: %v\n", formatComplexSlice(btpValuesA))
-	fmt.Printf("  加密后在level=%d\n", ctBTP.Level())
-
-	// 执行Bootstrapping
-	fmt.Println("  执行Bootstrap(ct)...")
-	ctBootstrap, err := btpEvaluator.Bootstrap(ctBTP)
-	if err != nil {
-		fmt.Printf("错误: Bootstrapping失败: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Printf("  Bootstrapping后: level=%d (恢复到level=%d)\n",
-		ctBootstrap.Level(), paramsBTP.MaxLevel())
-
-	// 验证Bootstrapping结果
-	resultBootstrap := make([]complex128, PlaintextSize)
-	decryptedBTP := decryptorBTP.DecryptNew(ctBootstrap)
-	encoderBTP.Decode(decryptedBTP, resultBootstrap)
-	fmt.Printf("  Bootstrapping后解密结果: %v\n", formatComplexSlice(resultBootstrap))
-	fmt.Printf("  原始值: %v\n", formatComplexSlice(btpValuesA))
-	fmt.Printf("  误差: %.2e\n", calculateError(btpValuesA, resultBootstrap))
-
-	// -------------------------------------------------------------------------
-	// 第八部分: Bootstrapping后再次执行乘法
-	// -------------------------------------------------------------------------
-	fmt.Println("\n[8] Bootstrapping后再次执行 A*B*B")
-	fmt.Println("----------------------------------------")
-
-	// 使用Bootstrapping恢复的密文重新进行两次乘法
-	fmt.Println("  创建用于后续演示的新密文...")
-
-	// 创建新的明文并加密
+	// 加密A和B到MaxLevel
 	ptA := ckks.NewPlaintext(paramsBTP, paramsBTP.MaxLevel())
 	ptB := ckks.NewPlaintext(paramsBTP, paramsBTP.MaxLevel())
-	encoderBTP.Encode(btpValuesA, ptA)
-	encoderBTP.Encode(btpValuesB, ptB)
+	encoderBTP.Encode(valuesA, ptA)
+	encoderBTP.Encode(valuesB, ptB)
 
 	ctA, _ := encryptorBTP.EncryptNew(ptA)
 	ctB, _ := encryptorBTP.EncryptNew(ptB)
+	fmt.Printf("  加密后: ctA.level=%d, ctB.level=%d\n", ctA.Level(), ctB.Level())
 
-	fmt.Printf("  密文A: level=%d\n", ctA.Level())
-	fmt.Printf("  密文B: level=%d\n", ctB.Level())
-
-	// 第一次乘法 A*B
-	// 注意: 必须使用MulRelin进行带重线性化的乘法
-	// 因为MulNew的degree会变成2，而Bootstrap要求输入degree=1
-	fmt.Println("\n  第一次乘法: ctA * ctB (带重线性化)")
-
-	// 关键: 使用btpEvaluator的内部评估器
-	// btpEvaluator.BootstrappingParameters包含完整的模数链(levels 0-16)
-	// btpEvaluator.Evaluator是ckks.Evaluator, 它的评估密钥与ctA/ctB兼容
-	// 注意: btpEvaluator.Evaluator使用的参数是BootstrappingParameters
-	// 但它可以正确处理level=1的密文,因为level检查是在密文级别进行的
-
-	ctMul1, _ := btpEvaluator.Evaluator.MulRelinNew(ctA, ctB)
-	if err := btpEvaluator.Evaluator.Rescale(ctMul1, ctMul1); err != nil {
-		fmt.Printf("  Rescale警告: %v\n", err)
+	// -------------------------------------------------------------------------
+	// 第一次乘法: A * B
+	// -------------------------------------------------------------------------
+	fmt.Println("\n  [步骤1] 第一次乘法: ctA * ctB (MulRelin + Rescale)")
+	// 使用btpEvaluator内部的ckks.Evaluator执行乘法
+	// 它使用BootstrappingParameters创建, 与btpKeys兼容
+	ctAB, _ := btpEvaluator.Evaluator.MulRelinNew(ctA, ctB)
+	if err := btpEvaluator.Evaluator.Rescale(ctAB, ctAB); err != nil {
+		fmt.Printf("  Rescale错误: %v\n", err)
+		os.Exit(1)
 	}
-	fmt.Printf("  结果: level=%d, degree=%d\n", ctMul1.Level(), ctMul1.Degree())
+	fmt.Printf("  乘法后: level=%d, degree=%d\n", ctAB.Level(), ctAB.Degree())
 
-	// 第二次乘法前先Bootstrapping恢复level
-	fmt.Println("\n  执行Bootstrapping恢复level...")
-	ctMul1BTP, err := btpEvaluator.Bootstrap(ctMul1)
+	// 验证A*B结果
+	decAB := make([]complex128, PlaintextSize)
+	decryptorBTP.Decrypt(ctAB, decryptedA)
+	encoderBTP.Decode(decryptorBTP.DecryptNew(ctAB), decAB)
+	fmt.Printf("  A*B结果: %v\n", formatComplexSlice(decAB))
+	fmt.Printf("  期望值:  %v\n", formatComplexSlice(expectedMul1))
+
+	// -------------------------------------------------------------------------
+	// Bootstrap恢复level
+	// -------------------------------------------------------------------------
+	fmt.Printf("\n  [步骤2] 执行Bootstrapping (level %d → level %d)\n", ctAB.Level(), paramsBTP.MaxLevel())
+	ctAB_btp, err := btpEvaluator.Bootstrap(ctAB)
 	if err != nil {
 		fmt.Printf("  Bootstrap错误: %v\n", err)
-		os.Exit(234)
+		os.Exit(1)
 	}
-	fmt.Printf("  Bootstrapping后: level=%d\n", ctMul1BTP.Level())
+	fmt.Printf("  Bootstrap后: level=%d (从%d恢复到%d)\n",
+		ctAB_btp.Level(), ctAB.Level(), ctAB_btp.Level())
 
-	// 第二次乘法 (A*B) * B
-	// 注意: 必须使用MulRelinNew来保持degree=1
-	fmt.Println("\n  第二次乘法: (ctA*ctB) * ctB (带重线性化)")
-	ctMul2, _ := btpEvaluator.Evaluator.MulRelinNew(ctMul1BTP, ctB)
-	if err := btpEvaluator.Evaluator.Rescale(ctMul2, ctMul2); err != nil {
-		fmt.Printf("  Rescale警告: %v\n", err)
+	// 验证Bootstrap后的精度
+	decAB_btp := make([]complex128, PlaintextSize)
+	encoderBTP.Decode(decryptorBTP.DecryptNew(ctAB_btp), decAB_btp)
+	fmt.Printf("  Bootstrap后A*B: %v\n", formatComplexSlice(decAB_btp))
+	fmt.Printf("  Bootstrap误差: %.2e\n", calculateError(expectedMul1, decAB_btp))
+
+	// -------------------------------------------------------------------------
+	// 第二次乘法: (A*B) * B = A*B*B
+	// -------------------------------------------------------------------------
+	fmt.Println("\n  [步骤3] 第二次乘法: (A*B) * B (MulRelin + Rescale)")
+	ctABB, _ := btpEvaluator.Evaluator.MulRelinNew(ctAB_btp, ctB)
+	if err := btpEvaluator.Evaluator.Rescale(ctABB, ctABB); err != nil {
+		fmt.Printf("  Rescale错误: %v\n", err)
+		os.Exit(1)
 	}
-	fmt.Printf("  结果: level=%d, degree=%d\n", ctMul2.Level(), ctMul2.Degree())
+	fmt.Printf("  乘法后: level=%d, degree=%d\n", ctABB.Level(), ctABB.Degree())
 
-	// 解密验证结果
-	// 注意: 解密器和评估器必须使用相同的参数集
+	// 解密验证最终结果
 	decryptedResult := make([]complex128, PlaintextSize)
-	expectedResult := multiplyComplexSlices(multiplyComplexSlices(btpValuesA, btpValuesB), btpValuesB)
-	decryptedPlain := decryptorBTP.DecryptNew(ctMul2)
-	encoderBTP.Decode(decryptedPlain, decryptedResult)
+	expectedResult := multiplyComplexSlices(expectedMul1, valuesB)
+	encoderBTP.Decode(decryptorBTP.DecryptNew(ctABB), decryptedResult)
 
-	fmt.Printf("  A*B*B 最终结果: %v\n", formatComplexSlice(decryptedResult))
-	fmt.Printf("  期望值: %v\n", formatComplexSlice(expectedResult))
+	fmt.Printf("\n  [结果验证]\n")
+	fmt.Printf("  A*B*B 计算结果: %v\n", formatComplexSlice(decryptedResult))
+	fmt.Printf("  A*B*B 期望值:   %v\n", formatComplexSlice(expectedResult))
 	fmt.Printf("  误差: %.2e\n", calculateError(expectedResult, decryptedResult))
 
 	if calculateError(expectedResult, decryptedResult) < 0.01 {
-		fmt.Println("  ✓ Bootstrapping使多次乘法成为可能!")
+		fmt.Println("  ✓ Bootstrapping使得A*B*B计算成功!")
+		fmt.Println("    没有Bootstrapping时, 第二次乘法因level耗尽而失败(见第[6]部分)")
+		fmt.Println("    有了Bootstrapping, level被恢复, 第二次乘法顺利完成")
 	}
 
 	// -------------------------------------------------------------------------
