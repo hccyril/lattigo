@@ -58,3 +58,6 @@ _testmain.go
 
 # agent
 .claude/
+
+# my
+*.pdf
